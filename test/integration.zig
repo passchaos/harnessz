@@ -1,7 +1,9 @@
 //! Package-level integration tests for the public `harnessz` module.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const harnessz = @import("harnessz");
+const bench_child = @import("bench_child");
 
 test "integration: golden, snapshot, and oracle workflow" {
     const alloc = std.testing.allocator;
@@ -415,4 +417,152 @@ test "integration: bench blackBox keeps a value observable" {
     const volatile_sink: *volatile u64 = &sink;
     volatile_sink.* = value;
     try std.testing.expectEqual(@as(u64, 42), volatile_sink.*);
+}
+
+fn expectedBenchChecksum() u64 {
+    var hash: u64 = 0xcbf29ce484222325;
+    var index: u64 = 0;
+    while (index < 1024) : (index += 1) {
+        hash ^= (index *% 0x9e3779b97f4a7c15) >> 7;
+        hash *%= 0x100000001b3;
+    }
+    return hash;
+}
+
+test "integration: process-isolated bench sample count and checksum" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    var response = try harnessz.bench.process.runProcess(alloc, io, .{
+        .argv = &.{bench_child.child_exe},
+        .benchmark = "checksum",
+        .warmup_iterations = 1,
+        .iterations = 4,
+        .timeout_ns = 10 * std.time.ns_per_s,
+    });
+    defer harnessz.bench.protocol.freeResponse(alloc, &response);
+
+    try std.testing.expectEqual(@as(usize, 4), response.samples_ns.len);
+    try std.testing.expect(response.error_name == null);
+    try std.testing.expectEqual(@as(?u64, expectedBenchChecksum()), response.checksum);
+
+    // A second isolated run must observe the same deterministic checksum.
+    var second = try harnessz.bench.process.runProcess(alloc, io, .{
+        .argv = &.{bench_child.child_exe},
+        .benchmark = "checksum",
+        .warmup_iterations = 0,
+        .iterations = 2,
+        .timeout_ns = 10 * std.time.ns_per_s,
+    });
+    defer harnessz.bench.protocol.freeResponse(alloc, &second);
+    try std.testing.expectEqual(@as(usize, 2), second.samples_ns.len);
+    try std.testing.expectEqual(response.checksum, second.checksum);
+}
+
+test "integration: process-isolated bench error propagation" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    try std.testing.expectError(error.BenchmarkFailed, harnessz.bench.process.runProcess(alloc, io, .{
+        .argv = &.{bench_child.child_exe},
+        .benchmark = "fail",
+        .warmup_iterations = 0,
+        .iterations = 1,
+        .timeout_ns = 10 * std.time.ns_per_s,
+    }));
+
+    var response = try harnessz.bench.process.runProcessResponse(alloc, io, .{
+        .argv = &.{bench_child.child_exe},
+        .benchmark = "fail",
+        .warmup_iterations = 0,
+        .iterations = 1,
+        .timeout_ns = 10 * std.time.ns_per_s,
+    });
+    defer harnessz.bench.protocol.freeResponse(alloc, &response);
+    try std.testing.expectEqual(@as(usize, 0), response.samples_ns.len);
+    try std.testing.expectEqualStrings("SyntheticBenchFailure", response.error_name.?);
+    try std.testing.expect(response.error_message != null);
+
+    try std.testing.expectError(error.BenchmarkFailed, harnessz.bench.process.runProcess(alloc, io, .{
+        .argv = &.{bench_child.child_exe},
+        .benchmark = "does-not-exist",
+        .warmup_iterations = 0,
+        .iterations = 1,
+        .timeout_ns = 10 * std.time.ns_per_s,
+    }));
+}
+
+test "integration: process-isolated bench timeout" {
+    if (comptime builtin.os.tag == .wasi or builtin.os.tag == .freestanding or builtin.os.tag == .other) {
+        return error.SkipZigTest;
+    }
+
+    const alloc = std.testing.allocator;
+    const result = harnessz.bench.process.runProcess(alloc, std.testing.io, .{
+        .argv = &.{bench_child.child_exe},
+        .benchmark = "slow",
+        .warmup_iterations = 0,
+        .iterations = 1,
+        .timeout_ns = 100 * std.time.ns_per_ms,
+    });
+    if (result) |response| {
+        var owned = response;
+        harnessz.bench.protocol.freeResponse(alloc, &owned);
+        return error.TestUnexpectedResult;
+    } else |err| switch (err) {
+        error.Timeout => {},
+        // Process control or concurrency is unavailable on this platform.
+        error.TimeoutUnavailable, error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    }
+}
+
+test "integration: bench child list mode" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ bench_child.child_exe, "--harnessz-list" },
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .inherit,
+    });
+    var waited = false;
+    defer if (!waited) child.kill(io);
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(alloc);
+    var read_buffer: [1024]u8 = undefined;
+    var reader = child.stdout.?.readerStreaming(io, &read_buffer);
+    try reader.interface.appendRemaining(alloc, &output, .limited(4096));
+
+    const term = try child.wait(io);
+    waited = true;
+    const exit_code = switch (term) {
+        .exited => |code| code,
+        else => return error.ChildExitFailure,
+    };
+    try std.testing.expectEqual(@as(u8, 0), exit_code);
+
+    var parsed = try std.json.parseFromSlice([]const []const u8, alloc, output.items, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 3), parsed.value.len);
+    try std.testing.expectEqualStrings("checksum", parsed.value[0]);
+    try std.testing.expectEqualStrings("slow", parsed.value[1]);
+    try std.testing.expectEqualStrings("fail", parsed.value[2]);
+}
+
+test "integration: process runner bounds child stdout" {
+    try std.testing.expectError(error.OutputTooLarge, harnessz.bench.process.runProcess(
+        std.testing.allocator,
+        std.testing.io,
+        .{
+            .argv = &.{bench_child.child_exe},
+            .benchmark = "checksum",
+            .warmup_iterations = 0,
+            .iterations = 1,
+            .timeout_ns = 10 * std.time.ns_per_s,
+            .max_output_bytes = 4,
+        },
+    ));
 }

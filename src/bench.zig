@@ -12,6 +12,24 @@ const stats = @import("stats.zig");
 /// allocator.
 pub const system = @import("bench/system.zig");
 
+/// Process-isolated benchmark support: JSON protocol, child registry,
+/// child entrypoint, and parent process runner.
+pub const protocol = @import("bench/protocol.zig");
+pub const registry = @import("bench/registry.zig");
+pub const child = @import("bench/child.zig");
+pub const process = @import("bench/process.zig");
+
+/// Type-erased benchmark callback used by `runRuntime` and the child
+/// registry.
+pub const Runner = struct {
+    context: *anyopaque,
+    run: *const fn (*anyopaque, Allocator, std.Io) anyerror!u64,
+
+    pub fn call(self: Runner, alloc: Allocator, io: std.Io) !u64 {
+        return self.run(self.context, alloc, io);
+    }
+};
+
 pub const CpuMask = system.CpuMask;
 pub const CountingAllocator = system.CountingAllocator;
 pub const affinityMask = system.affinityMask;
@@ -40,6 +58,9 @@ pub const Stats = struct {
     warmup_iterations: usize,
     samples_ns: []u64,
     distribution: stats.Summary,
+    /// Result returned by the last measured callback invocation. Useful as a
+    /// deterministic checksum when the callback computes one.
+    last_result: u64 = 0,
 
     pub fn deinit(self: *Stats, alloc: Allocator) void {
         alloc.free(self.samples_ns);
@@ -217,7 +238,40 @@ pub fn run(
     context: anytype,
     comptime func: anytype,
 ) !Stats {
-    return runInternal(alloc, alloc, io, options, context, func, null);
+    var context_copy = context;
+    const Adapter = struct {
+        fn invoke(ptr: *anyopaque, callback_alloc: Allocator, io_value: std.Io) anyerror!u64 {
+            const typed: *@TypeOf(context_copy) = @ptrCast(@alignCast(ptr));
+            return func(typed.*, callback_alloc, io_value);
+        }
+    };
+    return runInternal(
+        alloc,
+        alloc,
+        io,
+        options,
+        .{ .context = @ptrCast(&context_copy), .run = Adapter.invoke },
+        null,
+    );
+}
+
+/// Like `run`, but for an already type-erased callback. This is the entry
+/// point used by process-isolated child benchmarks and the registry.
+pub fn runRuntime(
+    alloc: Allocator,
+    io: std.Io,
+    options: Options,
+    context: *anyopaque,
+    func: *const fn (*anyopaque, Allocator, std.Io) anyerror!u64,
+) !Stats {
+    return runInternal(
+        alloc,
+        alloc,
+        io,
+        options,
+        .{ .context = context, .run = func },
+        null,
+    );
 }
 
 /// Like `run`, but also reports peak process RSS and peak bytes allocated
@@ -233,14 +287,20 @@ pub fn runMeasured(
     context: anytype,
     comptime func: anytype,
 ) !MeasuredStats {
+    var context_copy = context;
+    const Adapter = struct {
+        fn invoke(ptr: *anyopaque, callback_alloc: Allocator, io_value: std.Io) anyerror!u64 {
+            const typed: *@TypeOf(context_copy) = @ptrCast(@alignCast(ptr));
+            return func(typed.*, callback_alloc, io_value);
+        }
+    };
     var counting = system.CountingAllocator.init(alloc);
     const timing = try runInternal(
         alloc,
         counting.allocator(),
         io,
         options,
-        context,
-        func,
+        .{ .context = @ptrCast(&context_copy), .run = Adapter.invoke },
         &counting,
     );
     errdefer {
@@ -262,15 +322,14 @@ fn runInternal(
     callback_alloc: Allocator,
     io: std.Io,
     options: Options,
-    context: anytype,
-    comptime func: anytype,
+    runner: Runner,
     counting: ?*system.CountingAllocator,
 ) !Stats {
     if (options.iterations == 0) return error.InvalidOptions;
 
     var warmup_index: usize = 0;
     while (warmup_index < options.warmup_iterations) : (warmup_index += 1) {
-        const result = try func(context, callback_alloc, io);
+        const result = try runner.call(callback_alloc, io);
         blackBox(result);
     }
     if (counting) |counter| counter.resetPeak();
@@ -285,6 +344,7 @@ fn runInternal(
         options.iterations;
 
     var total_ns: u64 = 0;
+    var last_result: u64 = 0;
     while (samples.items.len < limit) {
         if (has_min_time and
             samples.items.len >= options.iterations and
@@ -292,9 +352,10 @@ fn runInternal(
         {
             break;
         }
-        const elapsed = try measure(callback_alloc, io, options.clock, context, func);
-        try samples.append(alloc, elapsed);
-        total_ns = total_ns +| elapsed;
+        const measurement = try measureRunner(callback_alloc, io, options.clock, runner);
+        last_result = measurement.result;
+        try samples.append(alloc, measurement.elapsed_ns);
+        total_ns = total_ns +| measurement.elapsed_ns;
     }
 
     if (samples.items.len == 0) return error.InvalidOptions;
@@ -304,6 +365,7 @@ fn runInternal(
         .warmup_iterations = options.warmup_iterations,
         .samples_ns = owned,
         .distribution = stats.summarize(u64, owned),
+        .last_result = last_result,
     };
 }
 
@@ -363,6 +425,25 @@ fn measure(
     return @intCast(elapsed_ns);
 }
 
+const Measurement = struct {
+    elapsed_ns: u64,
+    result: u64,
+};
+
+fn measureRunner(
+    alloc: Allocator,
+    io: std.Io,
+    clock: std.Io.Clock,
+    runner: Runner,
+) !Measurement {
+    const start = std.Io.Clock.Timestamp.now(io, clock);
+    const result = try runner.call(alloc, io);
+    blackBox(result);
+    const elapsed_ns = start.untilNow(io).raw.toNanoseconds();
+    if (elapsed_ns < 0) return error.ClockWentBackwards;
+    return .{ .elapsed_ns = @intCast(elapsed_ns), .result = result };
+}
+
 fn writeSummaryCsv(writer: *std.Io.Writer, summary: stats.Summary) !void {
     try writer.print("min_ns,{d}\n", .{summary.min});
     try writer.print("max_ns,{d}\n", .{summary.max});
@@ -393,4 +474,10 @@ fn safeDiv(numerator: f64, denominator: f64) f64 {
 
 test {
     _ = @import("bench_test.zig");
+    // Force analysis of the process-isolation submodules so their tests are
+    // included in the package test run.
+    std.testing.refAllDecls(protocol);
+    std.testing.refAllDecls(registry);
+    std.testing.refAllDecls(child);
+    std.testing.refAllDecls(process);
 }

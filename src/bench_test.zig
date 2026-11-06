@@ -282,3 +282,39 @@ test "bench blackBox: computed value survives through a volatile sink" {
     const volatile_array: *volatile [3]u64 = &array;
     try std.testing.expectEqual(@as(u64, 2), volatile_array.*[1]);
 }
+
+fn erasedCountedWork(context: *anyopaque, alloc: Allocator, io: std.Io) anyerror!u64 {
+    const typed: *RunContext = @ptrCast(@alignCast(context));
+    return countedWork(typed, alloc, io);
+}
+
+test "bench runRuntime: erased callback, structural counts, and last result" {
+    const alloc = std.testing.allocator;
+    var context: RunContext = .{};
+    var result = try bench.runRuntime(alloc, std.testing.io, .{
+        .warmup_iterations = 2,
+        .iterations = 4,
+    }, &context, erasedCountedWork);
+    defer result.deinit(alloc);
+
+    try std.testing.expectEqual(@as(usize, 6), context.calls);
+    try std.testing.expectEqual(@as(usize, 4), result.samples_ns.len);
+    try std.testing.expectEqual(@as(u64, 6), result.last_result);
+}
+
+fn voidContextWork(context: void, alloc: Allocator, io: std.Io) !u64 {
+    _ = context;
+    _ = alloc;
+    _ = io;
+    return 7;
+}
+
+test "bench run: void context remains supported" {
+    const alloc = std.testing.allocator;
+    var result = try bench.run(alloc, std.testing.io, .{
+        .warmup_iterations = 0,
+        .iterations = 1,
+    }, {}, voidContextWork);
+    defer result.deinit(alloc);
+    try std.testing.expectEqual(@as(u64, 7), result.last_result);
+}

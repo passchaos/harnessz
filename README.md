@@ -15,7 +15,7 @@ Zig 0.16.0 and uses `std.Io` with an explicit `io` value.
 | `oracle` | Byte/integer/float/complex comparisons, structural JSON comparison, tolerances, ULP distance, NaN/inf/signed-zero handling, Wyhash checksums |
 | `determinism` | Repeated-run byte stability, first divergence, thread-count matrix, real threaded runs with spawn fallback |
 | `stats` | Batch summaries plus streaming Welford accumulation, linear histograms, confidence intervals, trimmed means, and Welch's t-test |
-| `bench` | Warmup/timed runs, min-time sampling, interleaved A/B comparison, significance gates, CPU pinning, peak RSS, counting allocator, JSON/CSV, `blackBox` |
+| `bench` | Warmup/timed runs, min-time sampling, interleaved A/B comparison, significance gates, CPU pinning, peak RSS, counting allocator, JSON/CSV, `blackBox`, plus process-isolated child/parent runners |
 | `baseline` | JSON baseline storage, environment fingerprints, optional fingerprint enforcement, median regression detection, and entry updates |
 | `fixture` | `HARNESSZ_FIXTURES` / `testdata/` resolution and workspace helpers |
 | `evidence` | Evidence manifests with JSON round-trip, missing-path validation, and test-name validation |
@@ -362,6 +362,135 @@ warmup. The counting allocator is not thread-safe and counts requested bytes,
 not underlying allocator overhead. CPU pinning and RSS sampling are Linux-only
 and return `error.Unsupported` on other platforms.
 
+For already type-erased callbacks, `runRuntime(alloc, io, options, context,
+func)` uses the same warmup and sampling loop. `Stats.last_result` records the
+last measured callback result, which is how the process protocol carries a
+deterministic checksum.
+
+## Process-isolated benchmarks
+
+`bench.protocol`, `bench.registry`, `bench.child`, and `bench.process` move
+measurement into a separate OS process so the parent's threads, allocator
+state, and other benchmarks cannot perturb the samples.
+
+### Protocol
+
+The parent writes one JSON `Request` to the child's stdin and closes it:
+
+```json
+{"benchmark":"checksum","warmup_iterations":2,"iterations":20,"min_time_ns":0}
+```
+
+The child writes exactly one JSON `Response` to stdout:
+
+```json
+{"samples_ns":[123,456],"checksum":98765}
+{"samples_ns":[],"error_name":"SyntheticBenchFailure","error_message":"benchmark execution failed"}
+```
+
+`checksum` is an optional additive extension carrying the benchmark callback's
+last returned `u64` (useful for deterministic checksums). Null optional fields
+are omitted from the wire form. The child must not print anything else to
+stdout; diagnostics go to stderr.
+
+`bench.protocol` exposes `Request`, `Response`, `writeRequest`,
+`writeResponse`, `encodeRequest`, `encodeResponse`, `decodeRequest`, and
+`decodeResponse`. Decoding returns arena-backed `OwnedRequest`/`OwnedResponse`
+values; call `deinit()`. `cloneResponse`/`freeResponse` manage plain
+`Response` values returned by the parent runner.
+
+### Registry
+
+```zig
+var registry = harnessz.bench.registry.Registry.init(gpa);
+defer registry.deinit();
+try registry.add("checksum", .{
+    .context = &context,
+    .run = checksumEntry, // fn (*anyopaque, Allocator, std.Io) anyerror!u64
+});
+const entry = registry.find("checksum"); // no allocation
+const total = registry.count();
+const names = try registry.names(gpa, 32); // bounded, registration order
+defer gpa.free(names);
+```
+
+Names are unique, kept in insertion order, and bounded by the `limit` passed
+to `names`/`writeNamesJson`. Lookups never allocate.
+
+### Child executable
+
+```zig
+const std = @import("std");
+const harnessz = @import("harnessz");
+
+fn checksumEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
+    _ = context;
+    _ = alloc;
+    _ = io;
+    return 0x1234;
+}
+
+pub fn main(init: std.process.Init) !u8 {
+    var registry = harnessz.bench.registry.Registry.init(init.gpa);
+    defer registry.deinit();
+    var context: u8 = 0;
+    try registry.add("checksum", .{ .context = &context, .run = checksumEntry });
+    return harnessz.bench.child.mainInit(init, &registry);
+}
+```
+
+`child.mainInit` extracts argv from `std.process.Init`; with no flags it calls
+the argv-free `childMain`, otherwise it calls `childMainArgs`, which supports:
+
+- `--harnessz-bench=<name>`: select the benchmark. The request's `benchmark`
+  field must match; the request still carries the warmup/iteration settings.
+- `--harnessz-list`: print registered names as a JSON array and exit 0.
+
+`childMain(alloc, io, registry)` is the argv-free protocol core for callers
+that already know the benchmark from the request. It reads stdin, runs the
+benchmark with the same warmup/min-time/iteration logic as `bench.run`, writes
+the response, and returns 0 on success or non-zero on failure. `execute` is the
+in-process helper used by `childMainArgs`; it returns a `Response` with
+`error_name`/`error_message` for callback failures.
+
+### Parent runner
+
+```zig
+var response = try harnessz.bench.process.runProcess(gpa, io, .{
+    .argv = &.{ "/path/to/bench-child" },
+    .benchmark = "checksum",
+    .warmup_iterations = 2,
+    .iterations = 20,
+    .min_time_ns = 0,
+    .timeout_ns = 30 * std.time.ns_per_s, // 0 disables
+});
+defer harnessz.bench.protocol.freeResponse(gpa, &response);
+```
+
+`runProcess` returns `error.BenchmarkFailed` when the child produced a valid
+response with `error_name` set. `runProcessResponse` returns that response
+instead, so callers can inspect `error_name`/`error_message`. Other typed
+errors are `error.SpawnFailed`, `error.ChildExitFailure`, `error.Timeout`,
+`error.TimeoutUnavailable`, `error.OutputTooLarge`, `error.InvalidJson`,
+`error.InvalidResponse`, `error.WriteFailed`, `error.ReadFailed`,
+`error.WaitFailed`, and `error.InvalidOptions`.
+
+The parent writes the request, closes stdin, reads stdout up to
+`max_output_bytes` (default 16 MiB), then waits. When `timeout_ns` is non-zero,
+a watchdog task starts after the request is written and terminates the child
+if the deadline expires; the parent reaps it and returns `error.Timeout`.
+`error.TimeoutUnavailable` is returned when the `Io` implementation cannot
+spawn the watchdog task. The child's stderr is inherited.
+
+Process isolation is not OS-level sandboxing: the child runs as the same user,
+inherits the environment, filesystem, and network access, and has no extra
+resource limits. It isolates address space, threads, and allocator state only.
+Descendant processes that inherit stdout are not managed by the watchdog.
+
+The package's own `bench/child_main.zig` executable is registered by
+`build.zig`, and `test/integration.zig` receives its emitted path through the
+`bench_child` build-options module.
+
 ## Baselines and regression detection
 
 `baseline` stores benchmark samples as JSON and compares fresh samples against
@@ -512,6 +641,13 @@ field. `std.process.Init` in Zig 0.16 exposes the environment at
   `bench.peakRssBytes` are Linux-only and return `error.Unsupported`
   elsewhere. `CountingAllocator` is single-threaded and counts requested
   bytes, not allocator overhead.
+- Process isolation is not OS-level sandboxing: the child shares the parent's
+  user, environment, filesystem, and network. Timeout enforcement requires
+  `Io.concurrent`; platforms without it return `error.TimeoutUnavailable`.
+  Descendant processes that inherit the stdout pipe are not tracked.
+- The process runner inherits the child's stderr and bounds only stdout
+  (`max_output_bytes`). A child that writes an unbounded amount to stderr is
+  limited by the caller's stderr sink, not by `harnessz`.
 - Golden directory update mode prunes extra files under the managed root.
   Compare mode never mutates the tree.
 - `std.fs` file APIs are not used; `std.fs.path` remains in use for pure path

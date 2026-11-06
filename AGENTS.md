@@ -58,6 +58,23 @@ package. It also owns benchmark baseline storage and regression detection.
   mask. RSS tests assert positivity only, never a specific value.
 - Counting-allocator tests must check exact requested byte counts, peak
   retention after free, and failed-allocation behaviour.
+- Process-isolation tests must cover:
+  - Protocol JSON round-trips for requests, successful responses, and error
+    responses, plus invalid JSON and owned-value cleanup.
+  - Registry insertion order, bounded `names`, duplicate/empty-name rejection,
+    and allocation-free lookup.
+  - Child argument parsing (`--harnessz-list`, `--harnessz-bench=<name>`,
+    unknown/empty flags), stdout staying protocol-only, and benchmark callback
+    failures surfacing through `error_name`/`error_message`.
+  - Parent typed errors for spawn failure, non-zero child exit, oversized
+    output, invalid JSON, and benchmark failure.
+  - An integration test that spawns the built child through
+    `bench.process.runProcess`, verifies sample counts and the deterministic
+    checksum, verifies benchmark-error propagation, and verifies timeout
+    termination. Skip the timeout case cleanly when process control or
+    `Io.concurrent` is unavailable.
+  - Never assert absolute timings, only structure, counts, checksums, and
+    error kinds.
 - Baseline tests must cover opt-in fingerprint matching, mismatch, missing
   expected fingerprints, and the unchanged default.
 - Evidence tests must cover JSON round-trip, missing-path validation, known
@@ -110,6 +127,27 @@ package. It also owns benchmark baseline storage and regression detection.
   manifest and whose list is released by `deinit()`.
 - Directory creation uses `std.Io.Dir.createDirPath` (the Zig 0.16 recursive
   make-path API).
+- Process isolation lives in `src/bench/protocol.zig`,
+  `src/bench/registry.zig`, `src/bench/child.zig`, and
+  `src/bench/process.zig`. `bench.childMain(alloc, io, registry)` is the
+  argv-free protocol core. Zig 0.16 supplies argv through
+  `std.process.Init`, so executables call `bench.child.mainInit(init, &registry)`
+  or `childMainArgs` for `--harnessz-list` and `--harnessz-bench=<name>`.
+- Child stdout is protocol-only (one JSON `Response`, or one JSON name array in
+  list mode); diagnostics must go to stderr.
+- `protocol.Response.checksum` is an optional additive extension carrying the
+  callback's last returned `u64`. Required fields remain `samples_ns`,
+  `error_name`, and `error_message`.
+- `bench.process.runProcess` maps a valid response with `error_name` to
+  `error.BenchmarkFailed`; `runProcessResponse` returns the response so callers
+  can inspect the child's error name/message. Timeout zero disables the
+  watchdog; otherwise the watchdog starts after the request is written and
+  returns `error.Timeout` after terminating and reaping the child.
+  `error.TimeoutUnavailable` means the `Io` implementation cannot run the
+  watchdog.
+- Process isolation is not OS-level sandboxing. The child shares the parent's
+  user, environment, filesystem, and network; only address space, threads, and
+  allocator state are isolated. Descendants inheriting stdout are not tracked.
 
 ## Baseline workflow
 
@@ -133,3 +171,6 @@ package. It also owns benchmark baseline storage and regression detection.
 - Version: `0.0.1`
 - Minimum Zig: `0.16.0`
 - No external dependencies.
+- Integration-test child executable: `bench/child_main.zig`, installed as
+  `harnessz-bench-child`. `build.zig` passes its emitted path to
+  `test/integration.zig` through the `bench_child` options module.
