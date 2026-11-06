@@ -5,16 +5,22 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const diff = @import("diff.zig");
 const env = @import("env.zig");
+const normalize = @import("golden/normalize.zig");
 const oracle = @import("oracle.zig");
 const paths = @import("paths.zig");
 
 pub const Mode = enum { text, binary };
+
+pub const NormalizeOptions = normalize.NormalizeOptions;
 
 pub const Options = struct {
     /// Rewrite the golden file instead of failing on mismatch or absence.
     /// `HARNESSZ_UPDATE=1` (or `true`) also enables this.
     update: bool = false,
     mode: Mode = .text,
+    /// Text-only normalization applied before comparison. Binary mode ignores
+    /// these options.
+    normalize: NormalizeOptions = .{},
     max_diff_lines: usize = 40,
     context_lines: usize = 3,
     /// Maximum golden file size that will be read.
@@ -36,6 +42,9 @@ pub const Result = struct {
 
 pub const StringOptions = struct {
     mode: Mode = .text,
+    /// Text-only normalization applied before comparison. Binary mode ignores
+    /// these options.
+    normalize: NormalizeOptions = .{},
     max_diff_lines: usize = 40,
     context_lines: usize = 3,
     allocator: Allocator = std.heap.page_allocator,
@@ -66,18 +75,48 @@ pub fn expectFile(
         else => return err,
     };
 
+    const use_normalization = options.mode == .text and
+        normalize.enabled(options.normalize);
+
     if (existing) |old| {
         defer options.allocator.free(old);
-        if (std.mem.eql(u8, old, actual)) return .{ .outcome = .matched };
+
+        var normalized_old: ?[]u8 = null;
+        defer if (normalized_old) |value| options.allocator.free(value);
+        var normalized_actual: ?[]u8 = null;
+        defer if (normalized_actual) |value| options.allocator.free(value);
+
+        // Normalization is applied even when the raw bytes are equal so that
+        // `json_canonical` rejects invalid JSON consistently.
+        const compare_old = if (use_normalization) blk: {
+            normalized_old = try normalize.normalizeText(options.allocator, old, options.normalize);
+            break :blk normalized_old.?;
+        } else old;
+        const compare_actual = if (use_normalization) blk: {
+            normalized_actual = try normalize.normalizeText(options.allocator, actual, options.normalize);
+            break :blk normalized_actual.?;
+        } else actual;
+
+        if (std.mem.eql(u8, compare_old, compare_actual)) {
+            return .{ .outcome = .matched };
+        }
         if (update) {
+            // Update mode always persists the original bytes, not the
+            // normalized comparison form.
             try writeGolden(io, dir, path, actual);
             return .{ .outcome = .updated };
         }
-        if (options.report) reportMismatch(path, old, actual, options);
+        if (options.report) reportMismatch(path, compare_old, compare_actual, options);
         return error.GoldenMismatch;
     }
 
     if (!update) return error.GoldenMissing;
+    if (use_normalization) {
+        // Validate the bytes before creating a new golden file when
+        // normalization is requested; the original bytes are still written.
+        const normalized = try normalize.normalizeText(options.allocator, actual, options.normalize);
+        options.allocator.free(normalized);
+    }
     try writeGolden(io, dir, path, actual);
     return .{ .outcome = .created };
 }
@@ -89,20 +128,44 @@ pub fn expectString(
     actual: []const u8,
     options: StringOptions,
 ) !void {
-    if (std.mem.eql(u8, expected, actual)) return;
+    const use_normalization = options.mode == .text and
+        normalize.enabled(options.normalize);
+    if (!use_normalization and std.mem.eql(u8, expected, actual)) return;
+
+    var normalized_expected: ?[]u8 = null;
+    defer if (normalized_expected) |value| options.allocator.free(value);
+    var normalized_actual: ?[]u8 = null;
+    defer if (normalized_actual) |value| options.allocator.free(value);
+
+    const compare_expected = if (use_normalization) blk: {
+        normalized_expected = try normalize.normalizeText(options.allocator, expected, options.normalize);
+        break :blk normalized_expected.?;
+    } else expected;
+    const compare_actual = if (use_normalization) blk: {
+        normalized_actual = try normalize.normalizeText(options.allocator, actual, options.normalize);
+        break :blk normalized_actual.?;
+    } else actual;
+
+    if (std.mem.eql(u8, compare_expected, compare_actual)) return;
+
     if (options.report) {
         switch (options.mode) {
             .text => {
-                const rendered = diff.unified(options.allocator, expected, actual, .{
-                    .context = options.context_lines,
-                    .max_diff_lines = options.max_diff_lines,
-                    .header_a = "expected",
-                    .header_b = "actual",
-                }) catch return error.GoldenMismatch;
+                const rendered = diff.unified(
+                    options.allocator,
+                    compare_expected,
+                    compare_actual,
+                    .{
+                        .context = options.context_lines,
+                        .max_diff_lines = options.max_diff_lines,
+                        .header_a = "expected",
+                        .header_b = "actual",
+                    },
+                ) catch return error.GoldenMismatch;
                 defer options.allocator.free(rendered);
                 std.debug.print("golden string mismatch:\n{s}", .{rendered});
             },
-            .binary => reportBinary("string", expected, actual),
+            .binary => reportBinary("string", compare_expected, compare_actual),
         }
     }
     return error.GoldenMismatch;
@@ -296,4 +359,127 @@ test "golden binary mode reads and writes arbitrary bytes" {
         .allocator = alloc,
         .report = false,
     });
+}
+
+test "golden normalize: line endings and trailing whitespace" {
+    const line_options: StringOptions = .{
+        .normalize = .{ .line_endings = true },
+        .report = false,
+    };
+    try expectString("a\r\nb\r\nc", "a\nb\nc", line_options);
+    try expectString("a\rb", "a\nb", line_options);
+    try std.testing.expectError(error.GoldenMismatch, expectString("a\r\nb", "a\nc", line_options));
+
+    const trim_options: StringOptions = .{
+        .normalize = .{ .trailing_whitespace = true },
+        .report = false,
+    };
+    try expectString("a  \nb\t\n", "a\nb\n", trim_options);
+    try std.testing.expectError(error.GoldenMismatch, expectString("a \n b", "a\nb", trim_options));
+
+    const combined: StringOptions = .{
+        .normalize = .{ .line_endings = true, .trailing_whitespace = true },
+        .report = false,
+    };
+    try expectString("a  \r\nb\t\r\n", "a\nb\n", combined);
+
+    // Normalization stays off by default.
+    try std.testing.expectError(error.GoldenMismatch, expectString("a  \n", "a\n", .{
+        .report = false,
+    }));
+}
+
+test "golden normalize: JSON canonical comparison" {
+    const options: StringOptions = .{
+        .normalize = .{ .json_canonical = true },
+        .report = false,
+    };
+    try expectString(
+        "{\"b\":1,\"a\":{\"d\":2,\"c\":3}}",
+        "{\"a\":{\"c\":3,\"d\":2},\"b\":1}",
+        options,
+    );
+    try expectString("[{\"z\":0,\"y\":1},2]", "[{\"y\":1,\"z\":0},2]", options);
+    try std.testing.expectError(
+        error.GoldenMismatch,
+        expectString("[1,2]", "[2,1]", options),
+    );
+}
+
+test "golden normalize: invalid JSON returns InvalidJson" {
+    const options: StringOptions = .{
+        .normalize = .{ .json_canonical = true },
+        .report = false,
+    };
+    try std.testing.expectError(
+        error.InvalidJson,
+        expectString("{\"a\":1}", "{\"a\":}", options),
+    );
+    try std.testing.expectError(
+        error.InvalidJson,
+        expectString("not json", "not json", options),
+    );
+}
+
+test "golden normalize: update writes the original bytes" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    _ = try expectFile(io, tmp.dir, "case.json", "{\"b\":1,\"a\":2}", .{
+        .update = true,
+        .allocator = alloc,
+        .report = false,
+    });
+
+    const original = "{\"a\":3,  \r\n\"b\":1}";
+    const result = try expectFile(io, tmp.dir, "case.json", original, .{
+        .update = true,
+        .allocator = alloc,
+        .report = false,
+        .normalize = .{ .json_canonical = true },
+    });
+    try std.testing.expectEqual(Outcome.updated, result.outcome);
+
+    const stored = try tmp.dir.readFileAlloc(io, "case.json", alloc, .limited(128));
+    defer alloc.free(stored);
+    try std.testing.expectEqualStrings(original, stored);
+}
+
+test "golden normalize: normalized-equal file matches without rewriting" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    _ = try expectFile(io, tmp.dir, "case.txt", "a\r\nb\r\n", .{
+        .update = true,
+        .allocator = alloc,
+        .report = false,
+    });
+
+    const result = try expectFile(io, tmp.dir, "case.txt", "a\nb\n", .{
+        .update = true,
+        .allocator = alloc,
+        .report = false,
+        .normalize = .{ .line_endings = true },
+    });
+    try std.testing.expectEqual(Outcome.matched, result.outcome);
+
+    const stored = try tmp.dir.readFileAlloc(io, "case.txt", alloc, .limited(64));
+    defer alloc.free(stored);
+    try std.testing.expectEqualStrings("a\r\nb\r\n", stored);
+}
+
+test "golden normalize: binary mode ignores text normalization" {
+    try std.testing.expectError(error.GoldenMismatch, expectString("a\r\n", "a\n", .{
+        .mode = .binary,
+        .normalize = .{ .line_endings = true },
+        .report = false,
+    }));
+}
+
+test {
+    std.testing.refAllDecls(normalize);
 }

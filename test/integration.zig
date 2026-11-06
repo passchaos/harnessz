@@ -116,3 +116,207 @@ test "integration: fixture resolution" {
     try std.testing.expectEqualStrings("testdata/sample.bin", resolved.path);
     try std.testing.expectEqual(harnessz.fixture.Source.testdata, resolved.source);
 }
+
+test "integration: baseline save, load, compare, and update" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const baseline_samples = [_]u64{ 100, 100, 100 };
+    const store: harnessz.baseline.Store = .{
+        .allocator = alloc,
+        .entries = &.{.{
+            .name = "render",
+            .environment_fingerprint = "integration",
+            .samples_ns = &baseline_samples,
+            .summary = harnessz.stats.summarize(u64, &baseline_samples),
+        }},
+    };
+    try store.save(io, tmp.dir, "bench/baseline.json");
+
+    var loaded = harnessz.baseline.Store.init(alloc);
+    defer loaded.deinit();
+    try loaded.load(io, tmp.dir, "bench/baseline.json");
+    try std.testing.expectEqual(@as(usize, 1), loaded.entries.len);
+
+    const faster = [_]u64{ 50, 50, 50 };
+    const improved = try loaded.compare("render", &faster, .{});
+    try std.testing.expect(!improved.regressed);
+    try std.testing.expectEqual(@as(f64, 2), improved.speedup);
+
+    const slower = [_]u64{ 130, 130, 130 };
+    const regressed = try loaded.compare("render", &slower, .{});
+    try std.testing.expect(regressed.regressed);
+    try std.testing.expect(regressed.speedup < 1);
+
+    try loaded.update(.{
+        .name = "render",
+        .environment_fingerprint = "integration-2",
+        .samples_ns = &slower,
+        .summary = harnessz.stats.summarize(u64, &slower),
+    });
+    try std.testing.expectEqualStrings("integration-2", loaded.entries[0].environment_fingerprint);
+    try std.testing.expectEqualSlices(u64, &slower, loaded.entries[0].samples_ns);
+
+    try std.testing.expectError(
+        error.MissingBaseline,
+        loaded.compare("missing", &faster, .{}),
+    );
+}
+
+test "integration: golden normalization and canonical JSON" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    _ = try harnessz.golden.expectFile(
+        io,
+        tmp.dir,
+        "case.json",
+        "{\"b\":1,\"a\":{\"d\":2,\"c\":3}}",
+        .{ .update = true, .allocator = alloc, .report = false },
+    );
+
+    const matched = try harnessz.golden.expectFile(
+        io,
+        tmp.dir,
+        "case.json",
+        "{\"a\":{\"c\":3,\"d\":2},\"b\":1}",
+        .{
+            .allocator = alloc,
+            .report = false,
+            .normalize = .{ .json_canonical = true },
+        },
+    );
+    try std.testing.expectEqual(harnessz.golden.Outcome.matched, matched.outcome);
+
+    const original = "{\"a\":{\"c\":3,\"d\":2},\"b\":2}";
+    const updated = try harnessz.golden.expectFile(
+        io,
+        tmp.dir,
+        "case.json",
+        original,
+        .{
+            .update = true,
+            .allocator = alloc,
+            .report = false,
+            .normalize = .{ .json_canonical = true },
+        },
+    );
+    try std.testing.expectEqual(harnessz.golden.Outcome.updated, updated.outcome);
+
+    const stored = try tmp.dir.readFileAlloc(io, "case.json", alloc, .limited(256));
+    defer alloc.free(stored);
+    try std.testing.expectEqualStrings(original, stored);
+}
+
+const IntegrationThreadedContext = struct {};
+
+fn integrationStableWorker(
+    context: *IntegrationThreadedContext,
+    thread_index: usize,
+    out: *std.Io.Writer,
+) !void {
+    _ = context;
+    _ = thread_index;
+    try out.writeAll("stable\n");
+}
+
+fn integrationIndexedWorker(
+    context: *IntegrationThreadedContext,
+    thread_index: usize,
+    out: *std.Io.Writer,
+) !void {
+    _ = context;
+    try out.print("thread={d}\n", .{thread_index});
+}
+
+test "integration: threaded determinism stable and divergent producers" {
+    var context: IntegrationThreadedContext = .{};
+
+    var stable = try harnessz.determinism.runThreaded(
+        std.testing.allocator,
+        std.testing.io,
+        .{ .thread_counts = &.{ 1, 2 }, .thread_runs = 1 },
+        &context,
+        integrationStableWorker,
+    );
+    defer stable.deinit();
+    try std.testing.expect(stable.ok());
+    try std.testing.expectEqual(@as(usize, 2), stable.thread_checksums.len);
+
+    var divergent = try harnessz.determinism.runThreaded(
+        std.testing.allocator,
+        std.testing.io,
+        .{ .thread_counts = &.{2}, .thread_runs = 1 },
+        &context,
+        integrationIndexedWorker,
+    );
+    defer divergent.deinit();
+    try std.testing.expect(!divergent.ok());
+    try std.testing.expectEqual(@as(?usize, 1), divergent.first_divergence_thread);
+    try std.testing.expectEqual(@as(?usize, 7), divergent.divergence_offset);
+}
+
+test "integration: streaming stats, histogram, and confidence interval" {
+    const alloc = std.testing.allocator;
+
+    var accumulator: harnessz.stats.Accumulator = .init();
+    for ([_]f64{ 2, 4, 4, 4, 5, 5, 7, 9 }) |value| accumulator.add(value);
+    try std.testing.expectEqual(@as(usize, 8), accumulator.count());
+    try std.testing.expectEqual(@as(f64, 5), accumulator.mean());
+    try std.testing.expectEqual(@as(f64, 4), accumulator.variance());
+    try std.testing.expectEqual(@as(f64, 2), accumulator.summary().stddev);
+
+    const values = [_]f64{ 0, 1, 2, 3 };
+    var histogram = try harnessz.stats.Histogram.build(alloc, &values, 2);
+    defer histogram.deinit();
+    try std.testing.expectEqualSlices(u64, &.{ 2, 2 }, histogram.counts);
+    const json = try histogram.toJson(alloc);
+    defer alloc.free(json);
+    try std.testing.expect(std.mem.find(u8, json, "\"bucket_count\":2") != null);
+
+    const interval = harnessz.stats.confidenceIntervalMean(&[_]f64{ 10, 10, 10 }, 1.96);
+    try std.testing.expectEqual(@as(f64, 10), interval.lower);
+    try std.testing.expectEqual(@as(f64, 10), interval.upper);
+    try std.testing.expectEqual(@as(f64, 0), interval.margin);
+
+    try std.testing.expectEqual(
+        @as(f64, 5.5),
+        harnessz.stats.trimmedMean(&[_]f64{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 }, 0.2),
+    );
+}
+
+test "integration: ULP and complex oracles" {
+    const one: f64 = 1.0;
+    const next: f64 = @bitCast(@as(u64, @bitCast(one)) + 1);
+    const ulp_report = harnessz.oracle.compareUlp(f64, one, next, 1);
+    try std.testing.expect(ulp_report.equal);
+    try std.testing.expectEqual(@as(u64, 1), ulp_report.ulp_distance);
+    try std.testing.expect(!harnessz.oracle.compareUlp(f64, one, next, 0).equal);
+
+    const Complex = std.math.Complex(f64);
+    const expected = [_]Complex{
+        .{ .re = 1.0, .im = 2.0 },
+        .{ .re = 3.0, .im = 4.0 },
+    };
+    const actual = [_]Complex{
+        .{ .re = 1.0, .im = 2.0 },
+        .{ .re = 3.0 + 1e-9, .im = 4.0 },
+    };
+    try std.testing.expect(harnessz.oracle.compareComplexSlices(f64, &expected, &actual, .{
+        .abs_tolerance = 1e-8,
+    }).equal);
+    try std.testing.expect(!harnessz.oracle.compareComplexSlices(f64, &expected, &actual, .{}).equal);
+}
+
+test "integration: bench blackBox keeps a value observable" {
+    var sink: u64 = 0;
+    const value = @as(u64, 6) * 7;
+    harnessz.bench.blackBox(value);
+    const volatile_sink: *volatile u64 = &sink;
+    volatile_sink.* = value;
+    try std.testing.expectEqual(@as(u64, 42), volatile_sink.*);
+}

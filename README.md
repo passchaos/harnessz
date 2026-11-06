@@ -10,14 +10,16 @@ Zig 0.16.0 and uses `std.Io` with an explicit `io` value.
 
 | Module | Purpose |
 | --- | --- |
-| `golden` | Golden files with create/match/mismatch/update, text and binary modes, unified diffs |
+| `golden` | Golden files with create/match/mismatch/update, text/binary modes, optional line-ending, trailing-whitespace, and canonical-JSON normalization |
 | `snapshot` | Named in-memory or file-backed snapshots with `check`, `checkFmt`, and update mode |
-| `oracle` | Byte/integer/float comparisons, tolerances, NaN/inf/signed-zero handling, Wyhash checksums |
-| `determinism` | Repeated-run byte stability, first divergence, optional thread-count matrix |
-| `stats` | Median, percentile, mean, stddev, min, max, summaries, robust comparison |
-| `bench` | Warmup/timed runs, min-time sampling, interleaved A/B comparison, gates, JSON/CSV |
+| `oracle` | Byte/integer/float/complex comparisons, tolerances, ULP distance, NaN/inf/signed-zero handling, Wyhash checksums |
+| `determinism` | Repeated-run byte stability, first divergence, thread-count matrix, real threaded runs with spawn fallback |
+| `stats` | Batch summaries plus streaming Welford accumulation, linear histograms, confidence intervals, and trimmed means |
+| `bench` | Warmup/timed runs, min-time sampling, interleaved A/B comparison, gates, JSON/CSV, `blackBox` |
+| `baseline` | JSON baseline storage, environment fingerprints, median regression detection, and entry updates |
 | `fixture` | `HARNESSZ_FIXTURES` / `testdata/` resolution and workspace helpers |
 | `evidence` | Evidence manifests with JSON round-trip and missing-path validation |
+| `json_canon` | Canonical JSON emission with recursively sorted object keys |
 | `diff` | Line-oriented unified diff used by golden/snapshot diagnostics |
 | `paths` | Shared relative-path validation and existence checks |
 
@@ -52,9 +54,28 @@ Behaviour:
 - Mismatch without update prints a unified diff and returns
   `error.GoldenMismatch`.
 - Update mode creates parent directories and returns `.created` or `.updated`.
-- Text mode compares exact bytes; the mode only changes mismatch diagnostics
-  (line diff versus hex dump).
+- Text mode compares exact bytes by default; the mode only changes mismatch
+  diagnostics (line diff versus hex dump).
 - `expectString(expected, actual, .{})` performs the same comparison in memory.
+
+Text comparisons can opt into normalization:
+
+```zig
+try harnessz.golden.expectFile(io, dir, "render/basic.txt", actual, .{
+    .allocator = gpa,
+    .normalize = .{
+        .line_endings = true,       // CRLF and lone CR become LF
+        .trailing_whitespace = true, // strip spaces/tabs at line ends
+        .json_canonical = true,     // parse JSON and compare canonical forms
+    },
+});
+```
+
+`json_canonical` recursively sorts object keys, preserves array order, and
+returns `error.InvalidJson` for invalid input. Normalization applies only to
+text mode. Update mode always writes the original `actual` bytes, never the
+normalized form; normalized-equal comparisons return `.matched` without
+rewriting the file. Binary mode ignores normalization.
 
 ## Snapshots
 
@@ -86,6 +107,14 @@ const floats_report = harnessz.oracle.compareFloatSlices(f64, expected_f, actual
 });
 const ints_report = harnessz.oracle.compareIntSlices(i32, expected_i, actual_i);
 const hash = harnessz.oracle.checksum(bytes);
+
+const ulp_report = harnessz.oracle.compareUlp(f64, expected_f, actual_f, 2);
+const complex_report = harnessz.oracle.compareComplexSlices(
+    f64,
+    expected_complex,
+    actual_complex,
+    .{ .abs_tolerance = 1e-9 },
+);
 ```
 
 Float tolerance passes when:
@@ -97,6 +126,13 @@ Float tolerance passes when:
 NaN is unequal by default (`nan_equal = true` changes this). Same-sign
 infinities are equal. `+0.0` and `-0.0` are equal by default; set
 `signed_zero_equal = false` to require identical signs.
+
+`compareUlp` compares f32/f64 values by representable-step distance. `+0.0`
+and `-0.0` are equal (`UlpReason.signed_zero`), NaN never compares equal, and
+same-sign infinities are equal. `ulp_distance` is `maxInt(u64)` when the values
+are not comparable. `compareComplexSlices` applies the `FloatOptions` policy to
+both the real and imaginary parts; one complex element counts as one mismatch
+when either part differs.
 
 ## Determinism
 
@@ -120,6 +156,33 @@ actually using that many threads. The harness compares every output against the
 baseline (thread count 1) and reports the first divergent run/count and byte
 offset.
 
+For real threaded runs, use `runThreaded`:
+
+```zig
+fn produceThreaded(context: *Ctx, thread_index: usize, out: *std.Io.Writer) !void {
+    try context.writeForThread(thread_index, out);
+}
+
+var report = try harnessz.determinism.runThreaded(gpa, io, .{
+    .thread_counts = &.{ 1, 2, 4 },
+    .thread_runs = 2,
+}, &context, produceThreaded);
+defer report.deinit();
+
+if (!report.ok()) {
+    // report.first_divergence_thread, report.divergence_offset,
+    // report.thread_checksums, report.spawn_fallbacks
+}
+```
+
+`runThreaded` spawns `thread_counts[i]` OS threads per case, gives each lane its
+own output buffer, joins all threads, and compares every lane against thread 0.
+`options.runs` is ignored; `options.thread_runs` controls repetitions per
+thread count. A lane whose spawn fails runs on the caller and increments
+`spawn_fallbacks`.
+Worker errors are recorded in `report.worker_error` / `report.worker_thread`
+and make `ok()` false. The report owns `thread_checksums`; call `deinit()`.
+
 ## Statistics
 
 ```zig
@@ -133,6 +196,33 @@ const robust = harnessz.stats.compare(u64, baseline, candidate);
 returns count, min, max, mean, population stddev, median, p90, and p99.
 Statistics make temporary copies through `std.heap.page_allocator` because the
 input slices are const.
+
+Streaming and distribution helpers:
+
+```zig
+var accumulator: harnessz.stats.Accumulator = .init();
+accumulator.add(120);
+accumulator.add(130);
+const mean = accumulator.mean();
+const variance = accumulator.variance(); // population variance (Welford)
+const summary = accumulator.summary();   // median/p90/p99 remain 0
+
+var histogram = try harnessz.stats.Histogram.build(gpa, values, 8);
+defer histogram.deinit();
+const json = try histogram.toJson(gpa);
+defer gpa.free(json);
+
+const interval = harnessz.stats.confidenceIntervalMean(values, 1.96);
+const robust_mean = harnessz.stats.trimmedMean(values, 0.1);
+```
+
+`Histogram` uses linear buckets from min to max; the last bucket includes the
+maximum and all-equal values collapse to a zero-width first bucket.
+`confidenceIntervalMean` uses the normal approximation
+`mean +/- z * stddev / sqrt(n)` and assumes approximately i.i.d. samples; it is
+not an exact Student-t interval. `trimmedMean` discards
+`floor(len * trim_fraction)` values from each end, with `trim_fraction` in
+`[0, 0.5)`.
 
 ## Benchmarks
 
@@ -164,8 +254,8 @@ defer gpa.free(json);
 
 `comparison.speedup()` is `a.median / b.median`; values above 1 mean `b` is
 faster. A/B rounds are interleaved and alternate order. Callbacks return `u64`
-so the harness can keep the result observable with
-`std.mem.doNotOptimizeAway`.
+so the harness can keep the result observable with `blackBox`, which wraps the
+Zig 0.16 `std.mem.doNotOptimizeAway` primitive.
 
 Gate logic is testable without timing:
 
@@ -176,6 +266,56 @@ const comparison = harnessz.bench.Comparison.fromSamples(
 );
 try std.testing.expect(comparison.gate(1.5));
 ```
+
+## Baselines and regression detection
+
+`baseline` stores benchmark samples as JSON and compares fresh samples against
+a recorded median. The environment fingerprint prevents accidentally comparing
+different machines or build modes.
+
+```zig
+const samples = try harnessz.bench.run(gpa, io, .{ .iterations = 20 }, &ctx, work);
+defer samples.deinit(gpa);
+
+const fingerprint = try harnessz.baseline.environmentFingerprint(
+    gpa, io, "release-safe",
+);
+defer gpa.free(fingerprint);
+
+var store = harnessz.baseline.Store.init(gpa);
+defer store.deinit();
+
+// Load an existing baseline, or build one with Store.fromJson / save.
+try store.load(io, dir, "bench/baseline.json");
+
+const regression = try store.compare("render", samples.samples_ns, .{
+    .max_regression_ratio = 1.05,
+});
+if (regression.regressed) return error.PerformanceRegression;
+
+// Replace the entry by name. Missing names return error.MissingBaseline.
+try store.update(.{
+    .name = "render",
+    .environment_fingerprint = fingerprint,
+    .samples_ns = samples.samples_ns,
+    .summary = samples.distribution,
+});
+try store.save(io, dir, "bench/baseline.json");
+```
+
+Recommended workflow:
+
+1. Run `bench.run`, summarize, and write an initial JSON store (for example
+   via `Store.fromJson` or by constructing a `Store` and calling `save`).
+2. Commit the baseline file alongside the benchmark.
+3. On later runs, `load`, `compare`, and fail the gate when `regressed` is
+   true.
+4. Refresh with `update` and `save` only when the change is intentional.
+
+`speedup` is `baseline_median / current_median`; values above 1 mean the
+current run is faster. A regression is reported when
+`current_median > baseline_median * max_regression_ratio`. Empty current
+samples and non-positive ratios return `error.InvalidOptions`.
 
 ## Fixtures
 
@@ -232,14 +372,19 @@ field. `std.process.Init` in Zig 0.16 exposes the environment at
 ## Limitations
 
 - No command-line runner; these are library APIs.
-- Text golden mode does not normalize line endings or trailing whitespace.
+- Text golden normalization is opt-in. `json_canonical` re-emits minified JSON,
+  so update mode writes the original bytes rather than the canonical form.
 - The diff engine is a diagnostic aid, not a patch application engine. Very
   large differing middles fall back to delete-all/insert-all.
 - `stats` allocates temporary sorted copies with `std.heap.page_allocator`;
   slices must be non-empty for the direct statistic functions.
-- The thread matrix does not create threads; the callback owns that policy.
+- `runThreaded` creates OS threads; `run`'s thread matrix still delegates
+  threading to the callback. A lane whose spawn fails runs on the caller.
 - Benchmark callbacks must return `u64`; avoid relying on wall-clock
   assertions in tests.
+- `baseline` stores raw nanosecond samples but does not enforce that a loaded
+  baseline's environment fingerprint matches the current environment; callers
+  should compare fingerprints before gating.
 - `std.fs` file APIs are not used; `std.fs.path` remains in use for pure path
   manipulation. Directory creation uses `std.Io.Dir.createDirPath` (the Zig
   0.16 name for the recursive make-path operation).

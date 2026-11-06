@@ -8,6 +8,13 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const stats = @import("stats.zig");
 
+/// Keep `value` observable to the optimizer. Zig 0.16 exposes this through
+/// `std.mem.doNotOptimizeAway`, which emits an empty volatile asm block (or a
+/// volatile store on backends without asm support).
+pub fn blackBox(value: anytype) void {
+    std.mem.doNotOptimizeAway(value);
+}
+
 pub const Options = struct {
     warmup_iterations: usize = 1,
     iterations: usize = 10,
@@ -152,7 +159,7 @@ pub fn run(
     var warmup_index: usize = 0;
     while (warmup_index < options.warmup_iterations) : (warmup_index += 1) {
         const result = try func(context, alloc, io);
-        std.mem.doNotOptimizeAway(result);
+        blackBox(result);
     }
 
     var samples: std.ArrayList(u64) = .empty;
@@ -204,9 +211,9 @@ pub fn compare(
     var warmup_index: usize = 0;
     while (warmup_index < options.warmup_iterations) : (warmup_index += 1) {
         const result_a = try fn_a(ctx_a, alloc, io);
-        std.mem.doNotOptimizeAway(result_a);
+        blackBox(result_a);
         const result_b = try fn_b(ctx_b, alloc, io);
-        std.mem.doNotOptimizeAway(result_b);
+        blackBox(result_b);
     }
 
     var a_samples: std.ArrayList(u64) = .empty;
@@ -237,7 +244,7 @@ fn measure(
 ) !u64 {
     const start = std.Io.Clock.Timestamp.now(io, clock);
     const result = try func(context, alloc, io);
-    std.mem.doNotOptimizeAway(result);
+    blackBox(result);
     const elapsed_ns = start.untilNow(io).raw.toNanoseconds();
     if (elapsed_ns < 0) return error.ClockWentBackwards;
     return @intCast(elapsed_ns);
@@ -448,4 +455,25 @@ test "bench stats: JSON and CSV output" {
     defer alloc.free(csv);
     try std.testing.expect(std.mem.find(u8, csv, "metric,value") != null);
     try std.testing.expect(std.mem.find(u8, csv, "median_ns") != null);
+}
+
+fn computeObservableValue(input: u64) u64 {
+    return input * 3 + 1;
+}
+
+test "bench blackBox: computed value survives through a volatile sink" {
+    var sink: u64 = 0;
+    const value = computeObservableValue(7);
+    blackBox(value);
+
+    const volatile_sink: *volatile u64 = &sink;
+    volatile_sink.* = value;
+    try std.testing.expectEqual(@as(u64, 22), volatile_sink.*);
+
+    // Pointers and arrays are also accepted by the generic helper.
+    var array = [_]u64{ 1, 2, 3 };
+    blackBox(&array);
+    blackBox(array);
+    const volatile_array: *volatile [3]u64 = &array;
+    try std.testing.expectEqual(@as(u64, 2), volatile_array.*[1]);
 }

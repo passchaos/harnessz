@@ -1,17 +1,19 @@
 //! Summary statistics and robust comparisons for benchmark samples.
 
 const std = @import("std");
+const streaming = @import("stats/streaming.zig");
 
-pub const Summary = struct {
-    count: usize = 0,
-    min: f64 = 0,
-    max: f64 = 0,
-    mean: f64 = 0,
-    stddev: f64 = 0,
-    median: f64 = 0,
-    p90: f64 = 0,
-    p99: f64 = 0,
-};
+pub const Summary = @import("stats/summary.zig").Summary;
+
+/// Streaming (single-pass) mean/variance accumulator using Welford's method.
+pub const Accumulator = streaming.Accumulator;
+/// Linear histogram with JSON rendering.
+pub const Histogram = streaming.Histogram;
+/// Normal-approximation confidence interval for a sample mean.
+pub const ConfidenceInterval = streaming.ConfidenceInterval;
+pub const confidenceIntervalMean = streaming.confidenceIntervalMean;
+/// Mean after symmetric trimming of the sorted samples.
+pub const trimmedMean = streaming.trimmedMean;
 
 /// Population standard deviation.
 pub fn stddev(comptime T: type, values: []const T) f64 {
@@ -234,4 +236,10 @@ test "robust comparison speedup and improvement" {
     try std.testing.expect(comparison.isImprovement(1.5));
     try std.testing.expect(!comparison.isImprovement(2.5));
     try std.testing.expectEqual(@as(f64, 0.5), comparison.ratio());
+}
+
+test {
+    // Force analysis of the streaming submodule so its tests are included in
+    // the package test run.
+    std.testing.refAllDecls(streaming);
 }

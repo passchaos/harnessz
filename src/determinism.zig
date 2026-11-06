@@ -5,17 +5,14 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const oracle = @import("oracle.zig");
+const threaded = @import("determinism/threaded.zig");
 
-pub const Options = struct {
-    /// Number of baseline executions at thread count 1. Must be at least 1.
-    runs: usize = 3,
-    /// Maximum accepted output size per execution.
-    max_bytes: usize = 16 * 1024 * 1024,
-    /// Additional thread counts to exercise. Empty disables the matrix.
-    thread_counts: []const usize = &.{},
-    /// Executions per thread count in the matrix.
-    thread_runs: usize = 1,
-};
+pub const Options = @import("determinism/options.zig").Options;
+
+/// Real OS-thread determinism report.
+pub const ThreadedReport = threaded.ThreadedReport;
+/// Spawn real OS threads and compare every lane against thread 0.
+pub const runThreaded = threaded.runThreaded;
 
 pub const Report = struct {
     runs: usize,
@@ -261,4 +258,10 @@ test "determinism: zero runs is invalid" {
         &context,
         stableProducer,
     ));
+}
+
+test {
+    // Force analysis of the threaded submodule so its tests are included in
+    // the package test run.
+    std.testing.refAllDecls(threaded);
 }
