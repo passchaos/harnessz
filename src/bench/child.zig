@@ -11,13 +11,17 @@
 //!
 //! Zig 0.16 supplies argv through `std.process.Init`, so executables should
 //! call `mainInit(init, &registry)` from `pub fn main(init: std.process.Init)`.
+//! `mainInit` also prepares process isolation: on POSIX it puts the process in
+//! its own process group and asks the kernel for `SIGKILL` if the parent dies.
 //! Diagnostics are written to stderr; stdout is protocol-only.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const bench = @import("../bench.zig");
 const protocol = @import("protocol.zig");
 const registry_mod = @import("registry.zig");
+const watchdog_mod = @import("watchdog.zig");
 
 pub const default_max_request_bytes: usize = 4 * 1024 * 1024;
 
@@ -200,8 +204,64 @@ pub fn childMainArgs(
     return 0;
 }
 
+/// Best-effort child process setup, called by the executable entrypoint:
+///
+/// - POSIX: `setpgid(0, 0)` puts the child in its own process group so the
+///   parent can terminate the whole tree with `kill(-pid, SIGKILL)`.
+/// - Linux: `PR_SET_PDEATHSIG` asks the kernel to send `SIGKILL` if the parent
+///   dies, so a crashed parent does not leave the benchmark running.
+///
+/// The parent also creates the process group at spawn time; this function is a
+/// defensive fallback for callers that start the child themselves. Failures are
+/// ignored because a restricted environment may forbid the operation and the
+/// direct-child path still works.
+pub fn prepareProcess() void {
+    if (comptime watchdog_mod.posix_process_control) {
+        _ = std.posix.system.setpgid(0, 0);
+    }
+    if (comptime builtin.os.tag == .linux) {
+        _ = std.posix.prctl(
+            .SET_PDEATHSIG,
+            .{@as(usize, @intFromEnum(std.posix.SIG.KILL))},
+        ) catch {};
+    }
+}
+
+/// Current process id, or -1 when the platform has no `getpid`. Linux uses
+/// the raw syscall so the helper works with and without libc.
+pub fn processId() i64 {
+    if (comptime builtin.os.tag == .linux) {
+        return std.os.linux.getpid();
+    }
+    if (comptime watchdog_mod.posix_process_control) {
+        if (comptime @hasDecl(std.posix.system, "getpid")) {
+            return @intCast(std.posix.system.getpid());
+        }
+    }
+    return -1;
+}
+
+/// Current process group id, or -1 when the platform has no `getpgid`.
+/// Used by the child's own diagnostics and the process-tree integration test.
+pub fn processGroupId() i64 {
+    if (comptime builtin.os.tag == .linux) {
+        const rc = std.os.linux.getpgid(0);
+        if (std.os.linux.errno(rc) != .SUCCESS) return -1;
+        return @intCast(rc);
+    }
+    if (comptime watchdog_mod.posix_process_control) {
+        if (comptime @hasDecl(std.posix.system, "getpgid")) {
+            const rc = std.posix.system.getpgid(0);
+            if (std.posix.errno(rc) != .SUCCESS) return -1;
+            return @intCast(rc);
+        }
+    }
+    return -1;
+}
+
 /// Convenience entrypoint for `pub fn main(init: std.process.Init)`.
 pub fn mainInit(init: std.process.Init, reg: *const registry_mod.Registry) !u8 {
+    prepareProcess();
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     // The parent runner supplies no flags, so take the argv-free core
     // directly. Flag-aware invocations use `childMainArgs`.

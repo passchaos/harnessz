@@ -71,12 +71,23 @@ package. It also owns benchmark baseline storage and regression detection.
   - An integration test that spawns the built child through
     `bench.process.runProcess`, verifies sample counts and the deterministic
     checksum, verifies benchmark-error propagation, and verifies timeout
-    termination. Skip the timeout case cleanly when process control or
-    `Io.concurrent` is unavailable.
+    termination. Skip the timeout case cleanly when process control is
+    unavailable.
+  - Bounded stderr capture: a child that writes diagnostics and succeeds, a
+    child that writes diagnostics and fails (stderr visible through
+    `runProcessCapture`), and a child that writes more than
+    `max_stderr_bytes` (truncated without deadlock).
+  - Process-tree cleanup: a child benchmark that spawns a sleeping grandchild
+    must leave no `/proc/<pid>` entry for the grandchild or the direct child
+    after a timeout (Linux-only test, skip elsewhere). Verify the child is its
+    own process-group leader.
   - Never assert absolute timings, only structure, counts, checksums, and
     error kinds.
 - Baseline tests must cover opt-in fingerprint matching, mismatch, missing
   expected fingerprints, and the unchanged default.
+- Baseline report tests must cover mixed regressions/improvements/missing/
+  extra rows, deterministic text and JSON snapshots, the empty store, invalid
+  regression ratios, and duplicate current names.
 - Evidence tests must cover JSON round-trip, missing-path validation, known
   test names, and unknown test-name reporting with entry id and name.
 - Golden directory tests must cover create/update/match, missing/extra/changed
@@ -122,6 +133,15 @@ package. It also owns benchmark baseline storage and regression detection.
   existing entry, and `update` replaces an entry by name and returns
   `error.MissingBaseline` for unknown names. Fingerprint enforcement is
   opt-in via `Options.require_fingerprint` and `Options.expected_fingerprint`.
+  The store lives in `src/baseline/store.zig` and is re-exported from
+  `src/baseline.zig`.
+- `baseline.report.report(alloc, writer, store, current, options)` writes a
+  deterministic text table (rows sorted by name) and returns a `Report` with
+  `regressions`, `improvements`, `missing`, `extra`, `ok()`, `toText`/`toJson`
+  and `writeText`/`writeJson`. `Report.deinit()` releases the rows. A row is
+  `regressed` above `baseline * max_regression_ratio` and `improved` below
+  `baseline / max_regression_ratio`; p-values require at least two raw samples
+  on both sides.
 - `evidence.Manifest.fromJson` owns its arena; call `deinit()`.
   `validateTests` returns a `TestValidationReport` whose slices reference the
   manifest and whose list is released by `deinit()`.
@@ -139,15 +159,32 @@ package. It also owns benchmark baseline storage and regression detection.
   callback's last returned `u64`. Required fields remain `samples_ns`,
   `error_name`, and `error_message`.
 - `bench.process.runProcess` maps a valid response with `error_name` to
-  `error.BenchmarkFailed`; `runProcessResponse` returns the response so callers
-  can inspect the child's error name/message. Timeout zero disables the
-  watchdog; otherwise the watchdog starts after the request is written and
-  returns `error.Timeout` after terminating and reaping the child.
-  `error.TimeoutUnavailable` means the `Io` implementation cannot run the
-  watchdog.
+  `error.BenchmarkFailed` and forwards captured stderr to the parent's stderr.
+  `runProcessResponse` returns the response so callers can inspect the child's
+  error name/message. `runProcessCapture` returns a `ProcessResult` with
+  `response`, `stderr`, `stderr_truncated`, `timed_out`, and `exit_code`; call
+  `deinit(alloc)`, and use `takeResponse()` to transfer the response.
+- Timeout zero disables the watchdog; otherwise a dedicated `std.Thread`
+  watchdog starts after the request is written. It terminates the child's
+  whole POSIX process group (`kill(-pid, SIGKILL)`) and the parent reaps the
+  direct child. When a thread cannot be started the watchdog falls back to
+  `Io.concurrent`; `error.TimeoutUnavailable` means neither mechanism exists.
+- Child stderr is a pipe drained concurrently with stdout. At most
+  `Options.max_stderr_bytes` (default 64 KiB) is retained; the rest is
+  discarded so the child cannot deadlock, and `stderr_truncated` reports the
+  loss. Child stdout remains protocol-only.
+- Child executables call `bench.child.mainInit`, which runs
+  `child.prepareProcess()`: POSIX `setpgid(0, 0)` plus Linux
+  `PR_SET_PDEATHSIG=SIGKILL`. The parent also sets `SpawnOptions.pgid = 0`, so
+  the group exists before the watchdog can fire. `child.processId()` and
+  `child.processGroupId()` are diagnostic helpers (they return `-1` when the
+  platform lacks the syscall).
 - Process isolation is not OS-level sandboxing. The child shares the parent's
   user, environment, filesystem, and network; only address space, threads, and
-  allocator state are isolated. Descendants inheriting stdout are not tracked.
+  allocator state are isolated. Process-group cleanup is POSIX-only: on
+  Windows only the direct child is terminated, and descendants that call
+  `setsid` escape the group. A successful run does not kill lingering
+  descendants.
 
 ## Baseline workflow
 
@@ -164,6 +201,11 @@ package. It also owns benchmark baseline storage and regression detection.
 6. Refresh intentional changes with `update(entry)` followed by `save`.
    `update` only replaces an existing name; unknown names return
    `error.MissingBaseline`.
+7. For multi-entry reports, call `baseline.report.report(...)` with the loaded
+   store and the current entries. It writes the deterministic text table and
+   returns counts (`regressions`, `improvements`, `missing`, `extra`) plus a
+   JSON writer; fail the gate when `report.ok()` is false or
+   `report.regressions != 0`.
 
 ## Build metadata
 

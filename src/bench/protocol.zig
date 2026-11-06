@@ -2,8 +2,10 @@
 //! child.
 //!
 //! The child writes exactly one `Response` document to stdout. Diagnostics
-//! belong on stderr. Both owned (arena-backed) and borrowed encodings are
-//! provided; owned values must be released with their explicit `deinit`.
+//! belong on stderr, which is deliberately **not** part of this wire protocol:
+//! `bench.process` captures it out-of-band into a bounded `ProcessResult`.
+//! Both owned (arena-backed) and borrowed encodings are provided; owned values
+//! must be released with their explicit `deinit`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -235,6 +237,14 @@ test "protocol: cloneResponse owns copies" {
     try std.testing.expectEqualStrings("E", cloned.error_name.?);
     try std.testing.expectEqualStrings("message", cloned.error_message.?);
     try std.testing.expectEqual(@as(?u64, 42), cloned.checksum);
+}
+
+test "protocol: stderr is not part of the wire form" {
+    const alloc = std.testing.allocator;
+    const samples = [_]u64{ 1, 2 };
+    const encoded = try encodeResponse(alloc, .{ .samples_ns = @constCast(&samples) });
+    defer alloc.free(encoded);
+    try std.testing.expect(std.mem.find(u8, encoded, "stderr") == null);
 }
 
 test "protocol: cloneResponse handles empty optional values" {

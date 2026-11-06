@@ -18,6 +18,8 @@ pub const protocol = @import("bench/protocol.zig");
 pub const registry = @import("bench/registry.zig");
 pub const child = @import("bench/child.zig");
 pub const process = @import("bench/process.zig");
+pub const stderr_capture = @import("bench/stderr_capture.zig");
+pub const watchdog = @import("bench/watchdog.zig");
 
 /// Type-erased benchmark callback used by `runRuntime` and the child
 /// registry.
@@ -480,4 +482,6 @@ test {
     std.testing.refAllDecls(registry);
     std.testing.refAllDecls(child);
     std.testing.refAllDecls(process);
+    std.testing.refAllDecls(stderr_capture);
+    std.testing.refAllDecls(watchdog);
 }

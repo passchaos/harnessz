@@ -1,16 +1,28 @@
 //! Example process-isolated benchmark child executable.
 //!
-//! It registers a small deterministic benchmark, a deliberately failing
-//! benchmark, and a deliberately slow benchmark used by the timeout
-//! integration test. `childMain` keeps stdout protocol-only.
+//! It registers small deterministic benchmarks plus fixtures used by the
+//! integration tests:
+//!
+//! - `checksum`     deterministic work used for protocol assertions
+//! - `slow`         sleeps long enough for the parent timeout to win
+//! - `fail`         returns a benchmark error
+//! - `stderr-ok`    writes a diagnostic to stderr and succeeds
+//! - `stderr-fail`  writes a diagnostic to stderr and fails
+//! - `stderr-flood` writes far more stderr than the parent retains
+//! - `tree`         spawns a sleeping grandchild before blocking
+//!
+//! `childMain` keeps stdout protocol-only; all diagnostics go to stderr.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const harnessz = @import("harnessz");
 
 const BenchContext = struct {
     /// Per-call sleep for the timeout test. Kept large enough that a short
     /// parent timeout wins even on a loaded machine.
     slow_ns: u64 = 2 * std.time.ns_per_s,
+    /// Sleep after spawning the grandchild. Also larger than any test timeout.
+    tree_sleep_ns: u64 = 10 * std.time.ns_per_s,
 };
 
 /// Deterministic FNV-1a-style checksum. The exact value is part of the test
@@ -42,6 +54,86 @@ fn failingWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u6
     return error.SyntheticBenchFailure;
 }
 
+fn stderrOkWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
+    _ = context;
+    _ = alloc;
+    try std.Io.File.stderr().writeStreamingAll(
+        io,
+        "harnessz-bench-child: stderr-ok diagnostic\n",
+    );
+    return 42;
+}
+
+fn stderrFailWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
+    _ = context;
+    _ = alloc;
+    try std.Io.File.stderr().writeStreamingAll(
+        io,
+        "harnessz-bench-child: deliberate stderr failure\n",
+    );
+    return error.SyntheticBenchFailure;
+}
+
+fn stderrFloodWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
+    _ = context;
+    _ = alloc;
+    var chunk: [4096]u8 = undefined;
+    @memset(&chunk, 'x');
+    var written: usize = 0;
+    while (written < 256 * 1024) : (written += chunk.len) {
+        try std.Io.File.stderr().writeStreamingAll(io, &chunk);
+    }
+    return 7;
+}
+
+fn treeWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
+    if (comptime harnessz.bench.watchdog.posix_process_control and builtin.os.tag == .linux) {
+        return treeWorkPosix(context, alloc, io);
+    } else {
+        return error.Unsupported;
+    }
+}
+
+fn treeWorkPosix(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
+    _ = alloc;
+
+    const grandchild = std.process.spawn(io, .{
+        .argv = &.{ "/bin/sleep", "30" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        // Do not let the grandchild hold the protocol pipes open.
+        .stderr = .ignore,
+    }) catch |err| {
+        var buffer: [128]u8 = undefined;
+        const message = std.fmt.bufPrint(
+            &buffer,
+            "harnessz-bench-child: grandchild spawn failed: {s}\n",
+            .{@errorName(err)},
+        ) catch "harnessz-bench-child: grandchild spawn failed\n";
+        std.Io.File.stderr().writeStreamingAll(io, message) catch {};
+        return err;
+    };
+    const grandchild_id = grandchild.id orelse return error.GrandchildSpawnFailed;
+
+    var buffer: [256]u8 = undefined;
+    const message = std.fmt.bufPrint(
+        &buffer,
+        "harnessz-bench-child: pid={d} pgid={d} grandchild={d}\n",
+        .{
+            harnessz.bench.child.processId(),
+            harnessz.bench.child.processGroupId(),
+            grandchild_id,
+        },
+    ) catch "harnessz-bench-child: tree started\n";
+    std.Io.File.stderr().writeStreamingAll(io, message) catch {};
+
+    try io.sleep(
+        std.Io.Duration.fromNanoseconds(@intCast(context.tree_sleep_ns)),
+        .awake,
+    );
+    return 1;
+}
+
 fn checksumEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
     return checksumWork(@ptrCast(@alignCast(context)), alloc, io);
 }
@@ -54,6 +146,22 @@ fn failingEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyer
     return failingWork(@ptrCast(@alignCast(context)), alloc, io);
 }
 
+fn stderrOkEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
+    return stderrOkWork(@ptrCast(@alignCast(context)), alloc, io);
+}
+
+fn stderrFailEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
+    return stderrFailWork(@ptrCast(@alignCast(context)), alloc, io);
+}
+
+fn stderrFloodEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
+    return stderrFloodWork(@ptrCast(@alignCast(context)), alloc, io);
+}
+
+fn treeEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
+    return treeWork(@ptrCast(@alignCast(context)), alloc, io);
+}
+
 pub fn main(init: std.process.Init) !u8 {
     var registry = harnessz.bench.registry.Registry.init(init.gpa);
     defer registry.deinit();
@@ -62,6 +170,10 @@ pub fn main(init: std.process.Init) !u8 {
     try registry.add("checksum", .{ .context = &context, .run = checksumEntry });
     try registry.add("slow", .{ .context = &context, .run = slowEntry });
     try registry.add("fail", .{ .context = &context, .run = failingEntry });
+    try registry.add("stderr-ok", .{ .context = &context, .run = stderrOkEntry });
+    try registry.add("stderr-fail", .{ .context = &context, .run = stderrFailEntry });
+    try registry.add("stderr-flood", .{ .context = &context, .run = stderrFloodEntry });
+    try registry.add("tree", .{ .context = &context, .run = treeEntry });
 
     return harnessz.bench.child.mainInit(init, &registry);
 }

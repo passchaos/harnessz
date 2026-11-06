@@ -15,8 +15,8 @@ Zig 0.16.0 and uses `std.Io` with an explicit `io` value.
 | `oracle` | Byte/integer/float/complex comparisons, structural JSON comparison, tolerances, ULP distance, NaN/inf/signed-zero handling, Wyhash checksums |
 | `determinism` | Repeated-run byte stability, first divergence, thread-count matrix, real threaded runs with spawn fallback |
 | `stats` | Batch summaries plus streaming Welford accumulation, linear histograms, confidence intervals, trimmed means, and Welch's t-test |
-| `bench` | Warmup/timed runs, min-time sampling, interleaved A/B comparison, significance gates, CPU pinning, peak RSS, counting allocator, JSON/CSV, `blackBox`, plus process-isolated child/parent runners |
-| `baseline` | JSON baseline storage, environment fingerprints, optional fingerprint enforcement, median regression detection, and entry updates |
+| `bench` | Warmup/timed runs, min-time sampling, interleaved A/B comparison, significance gates, CPU pinning, peak RSS, counting allocator, JSON/CSV, `blackBox`, plus process-isolated child/parent runners with process-group timeouts and bounded stderr capture |
+| `baseline` | JSON baseline storage, environment fingerprints, optional fingerprint enforcement, median regression detection, entry updates, and deterministic text/JSON comparison reports |
 | `fixture` | `HARNESSZ_FIXTURES` / `testdata/` resolution and workspace helpers |
 | `evidence` | Evidence manifests with JSON round-trip, missing-path validation, and test-name validation |
 | `json_canon` | Canonical JSON emission with recursively sorted object keys |
@@ -391,7 +391,9 @@ The child writes exactly one JSON `Response` to stdout:
 `checksum` is an optional additive extension carrying the benchmark callback's
 last returned `u64` (useful for deterministic checksums). Null optional fields
 are omitted from the wire form. The child must not print anything else to
-stdout; diagnostics go to stderr.
+stdout; diagnostics go to stderr. Stderr is **not** part of the wire protocol:
+the parent captures it out-of-band and returns it through
+`process.ProcessResult`.
 
 `bench.protocol` exposes `Request`, `Response`, `writeRequest`,
 `writeResponse`, `encodeRequest`, `encodeResponse`, `decodeRequest`, and
@@ -439,6 +441,13 @@ pub fn main(init: std.process.Init) !u8 {
 }
 ```
 
+`child.mainInit` also prepares process isolation before dispatching. On POSIX
+it calls `setpgid(0, 0)` so the child owns a process group, and on Linux it sets
+`PR_SET_PDEATHSIG` to `SIGKILL` so a crashed parent cannot leave the benchmark
+running. Both operations are best-effort; the parent also creates the group at
+spawn time. Callers that implement their own `main` can call
+`child.prepareProcess()` explicitly.
+
 `child.mainInit` extracts argv from `std.process.Init`; with no flags it calls
 the argv-free `childMain`, otherwise it calls `childMainArgs`, which supports:
 
@@ -468,28 +477,66 @@ defer harnessz.bench.protocol.freeResponse(gpa, &response);
 ```
 
 `runProcess` returns `error.BenchmarkFailed` when the child produced a valid
-response with `error_name` set. `runProcessResponse` returns that response
+response with `error_name` set, and forwards the captured stderr to the
+parent's stderr as a diagnostic. `runProcessResponse` returns that response
 instead, so callers can inspect `error_name`/`error_message`. Other typed
 errors are `error.SpawnFailed`, `error.ChildExitFailure`, `error.Timeout`,
-`error.TimeoutUnavailable`, `error.OutputTooLarge`, `error.InvalidJson`,
-`error.InvalidResponse`, `error.WriteFailed`, `error.ReadFailed`,
-`error.WaitFailed`, and `error.InvalidOptions`.
+`error.TimeoutUnavailable`, `error.OutputTooLarge`, `error.CaptureUnavailable`,
+`error.InvalidJson`, `error.InvalidResponse`, `error.WriteFailed`,
+`error.ReadFailed`, `error.WaitFailed`, and `error.InvalidOptions`.
+
+For full diagnostics, use `runProcessCapture`, which returns a
+`process.ProcessResult` instead of discarding stderr:
+
+```zig
+var result = try harnessz.bench.process.runProcessCapture(gpa, io, .{
+    .argv = &.{ "/path/to/bench-child" },
+    .benchmark = "checksum",
+    .iterations = 20,
+    .timeout_ns = 30 * std.time.ns_per_s,
+    .max_stderr_bytes = 64 * 1024, // default
+});
+defer result.deinit(gpa);
+
+if (result.timed_out) return error.Timeout;
+if (result.response.error_name) |name| {
+    std.debug.print("benchmark failed: {s}\nstderr: {s}\n", .{ name, result.stderr });
+}
+```
+
+`ProcessResult` exposes `response`, `stderr`, `stderr_truncated`, `timed_out`,
+and `exit_code`. Timeouts and benchmark-error responses are returned in the
+result rather than as errors; spawn, protocol, and IO failures remain typed
+errors. `takeResponse()` transfers ownership of the protocol response.
 
 The parent writes the request, closes stdin, reads stdout up to
-`max_output_bytes` (default 16 MiB), then waits. When `timeout_ns` is non-zero,
-a watchdog task starts after the request is written and terminates the child
-if the deadline expires; the parent reaps it and returns `error.Timeout`.
-`error.TimeoutUnavailable` is returned when the `Io` implementation cannot
-spawn the watchdog task. The child's stderr is inherited.
+`max_output_bytes` (default 16 MiB), and drains stderr concurrently. The
+stderr pipe is always drained to EOF, so a child that writes more than
+`max_stderr_bytes` (default 64 KiB) cannot deadlock; excess bytes are
+discarded and `stderr_truncated` is set.
 
-Process isolation is not OS-level sandboxing: the child runs as the same user,
-inherits the environment, filesystem, and network access, and has no extra
-resource limits. It isolates address space, threads, and allocator state only.
-Descendant processes that inherit stdout are not managed by the watchdog.
+When `timeout_ns` is non-zero, a dedicated `std.Thread` watchdog starts after
+the request is written. If the deadline expires it sends `SIGKILL` to the
+child's whole process group (`kill(-pid, SIGKILL)`) on POSIX, then the parent
+reaps the direct child. This kills sleeping grandchildren as well. When a
+thread cannot be started, the watchdog falls back to `Io.concurrent`; only
+when neither mechanism is available is `error.TimeoutUnavailable` returned.
 
 The package's own `bench/child_main.zig` executable is registered by
 `build.zig`, and `test/integration.zig` receives its emitted path through the
-`bench_child` build-options module.
+`bench_child` build-options module. The integration suite includes a `tree`
+benchmark that spawns a sleeping grandchild and verifies through `/proc` that
+both the child and grandchild are gone after a timeout (Linux only).
+
+### Process isolation boundaries
+
+This is process isolation, not OS-level sandboxing. The child runs as the same
+user, inherits the environment, filesystem, and network access, and has no
+extra resource limits. It isolates address space, threads, and allocator state
+only. Process-group cleanup is POSIX-only: on Windows the watchdog terminates
+the direct child, and grandchildren are not tracked because Zig 0.16 does not
+expose job-object helpers. Descendants that escape the process group (for
+example by calling `setsid`) are also outside the cleanup guarantee.
 
 ## Baselines and regression detection
 
@@ -544,6 +591,41 @@ Recommended workflow:
 current run is faster. A regression is reported when
 `current_median > baseline_median * max_regression_ratio`. Empty current
 samples and non-positive ratios return `error.InvalidOptions`.
+
+### Comparison report
+
+`baseline.report.report` merges the whole store with the current entries and
+writes a deterministic text table. Rows are sorted by name; a p-value is
+included when both sides have at least two raw samples.
+
+```zig
+var out: std.Io.Writer.Allocating = .init(gpa);
+defer out.deinit();
+
+var comparison = try harnessz.baseline.report.report(
+    gpa,
+    &out.writer,
+    &store,
+    current_entries, // []const harnessz.baseline.Entry
+    .{ .max_regression_ratio = 1.05 },
+);
+defer comparison.deinit();
+
+std.debug.print("{s}", .{out.written()});
+if (comparison.regressions != 0) return error.PerformanceRegression;
+
+const json = try comparison.toJson(gpa);
+defer gpa.free(json);
+```
+
+The text table contains `name`, `baseline_ns`, `current_ns`, `speedup`,
+`p_value`, and a status marker (`REGRESSED`, `IMPROVED`, `UNCHANGED`,
+`MISSING`, or `EXTRA`). `Report` exposes `regressions`, `improvements`,
+`missing`, and `extra` counts plus `ok()`; `writeJson`/`toJson` emit the same
+rows with a summary object. `missing` counts baseline entries with no current
+counterpart, and `extra` counts current entries with no baseline. Rows without
+a usable baseline or current median return `error.InvalidBaseline` or
+`error.InvalidEntry`; duplicate current names return `error.DuplicateEntry`.
 
 Fingerprint enforcement is opt-in. With `require_fingerprint = true`, `compare`
 returns `error.EnvironmentMismatch` unless the entry's
@@ -642,12 +724,18 @@ field. `std.process.Init` in Zig 0.16 exposes the environment at
   elsewhere. `CountingAllocator` is single-threaded and counts requested
   bytes, not allocator overhead.
 - Process isolation is not OS-level sandboxing: the child shares the parent's
-  user, environment, filesystem, and network. Timeout enforcement requires
-  `Io.concurrent`; platforms without it return `error.TimeoutUnavailable`.
-  Descendant processes that inherit the stdout pipe are not tracked.
-- The process runner inherits the child's stderr and bounds only stdout
-  (`max_output_bytes`). A child that writes an unbounded amount to stderr is
-  limited by the caller's stderr sink, not by `harnessz`.
+  user, environment, filesystem, and network. Timeout enforcement uses a
+  dedicated `std.Thread` watchdog and falls back to `Io.concurrent`; only when
+  neither mechanism exists does it return `error.TimeoutUnavailable`.
+  Process-group cleanup is POSIX-only; on Windows only the direct child is
+  terminated, and descendants that call `setsid` escape the group.
+- The process runner captures stderr into a pipe and retains at most
+  `max_stderr_bytes` (default 64 KiB). The pipe is always drained to EOF, so
+  oversized stderr is truncated rather than deadlocking. A descendant that
+  keeps the stderr pipe open after the direct child exits can still delay
+  completion until the pipe closes or the timeout fires.
+- A successful child run does not kill lingering descendants; process-group
+  termination happens on timeout and on output/read failures.
 - Golden directory update mode prunes extra files under the managed root.
   Compare mode never mutates the tree.
 - `std.fs` file APIs are not used; `std.fs.path` remains in use for pure path

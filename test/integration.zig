@@ -546,10 +546,14 @@ test "integration: bench child list mode" {
 
     var parsed = try std.json.parseFromSlice([]const []const u8, alloc, output.items, .{});
     defer parsed.deinit();
-    try std.testing.expectEqual(@as(usize, 3), parsed.value.len);
+    try std.testing.expectEqual(@as(usize, 7), parsed.value.len);
     try std.testing.expectEqualStrings("checksum", parsed.value[0]);
     try std.testing.expectEqualStrings("slow", parsed.value[1]);
     try std.testing.expectEqualStrings("fail", parsed.value[2]);
+    try std.testing.expectEqualStrings("stderr-ok", parsed.value[3]);
+    try std.testing.expectEqualStrings("stderr-fail", parsed.value[4]);
+    try std.testing.expectEqualStrings("stderr-flood", parsed.value[5]);
+    try std.testing.expectEqualStrings("tree", parsed.value[6]);
 }
 
 test "integration: process runner bounds child stdout" {
@@ -565,4 +569,168 @@ test "integration: process runner bounds child stdout" {
             .max_output_bytes = 4,
         },
     ));
+}
+
+test "integration: process stderr captured on success" {
+    const alloc = std.testing.allocator;
+    var result = try harnessz.bench.process.runProcessCapture(alloc, std.testing.io, .{
+        .argv = &.{bench_child.child_exe},
+        .benchmark = "stderr-ok",
+        .warmup_iterations = 0,
+        .iterations = 1,
+        .timeout_ns = 10 * std.time.ns_per_s,
+    });
+    defer result.deinit(alloc);
+
+    try std.testing.expect(!result.timed_out);
+    try std.testing.expectEqual(@as(?u8, 0), result.exit_code);
+    try std.testing.expectEqual(@as(?u64, 42), result.response.checksum);
+    try std.testing.expectEqual(@as(usize, 1), result.response.samples_ns.len);
+    try std.testing.expect(!result.stderr_truncated);
+    try std.testing.expect(
+        std.mem.find(u8, result.stderr, "stderr-ok diagnostic") != null,
+    );
+}
+
+test "integration: process stderr captured on benchmark failure" {
+    const alloc = std.testing.allocator;
+    var result = try harnessz.bench.process.runProcessCapture(alloc, std.testing.io, .{
+        .argv = &.{bench_child.child_exe},
+        .benchmark = "stderr-fail",
+        .warmup_iterations = 0,
+        .iterations = 1,
+        .timeout_ns = 10 * std.time.ns_per_s,
+    });
+    defer result.deinit(alloc);
+
+    try std.testing.expectEqualStrings(
+        "SyntheticBenchFailure",
+        result.response.error_name.?,
+    );
+    try std.testing.expect(
+        std.mem.find(u8, result.stderr, "deliberate stderr failure") != null,
+    );
+
+    // The strict runner still maps the error response to BenchmarkFailed.
+    try std.testing.expectError(error.BenchmarkFailed, harnessz.bench.process.runProcess(
+        alloc,
+        std.testing.io,
+        .{
+            .argv = &.{bench_child.child_exe},
+            .benchmark = "stderr-fail",
+            .warmup_iterations = 0,
+            .iterations = 1,
+            .timeout_ns = 10 * std.time.ns_per_s,
+        },
+    ));
+}
+
+test "integration: oversized stderr is truncated without deadlock" {
+    const alloc = std.testing.allocator;
+    var result = try harnessz.bench.process.runProcessCapture(alloc, std.testing.io, .{
+        .argv = &.{bench_child.child_exe},
+        .benchmark = "stderr-flood",
+        .warmup_iterations = 0,
+        .iterations = 1,
+        .timeout_ns = 10 * std.time.ns_per_s,
+        .max_stderr_bytes = 1024,
+    });
+    defer result.deinit(alloc);
+
+    try std.testing.expect(!result.timed_out);
+    try std.testing.expectEqual(@as(?u64, 7), result.response.checksum);
+    try std.testing.expectEqual(@as(usize, 1024), result.stderr.len);
+    try std.testing.expect(result.stderr_truncated);
+}
+
+fn diagnosticNumber(bytes: []const u8, marker: []const u8) !i64 {
+    const start = std.mem.find(u8, bytes, marker) orelse
+        return error.MissingDiagnostic;
+    const rest = bytes[start + marker.len ..];
+    var end: usize = 0;
+    while (end < rest.len and rest[end] >= '0' and rest[end] <= '9') : (end += 1) {}
+    if (end == 0) return error.MissingDiagnostic;
+    return std.fmt.parseInt(i64, rest[0..end], 10);
+}
+
+fn expectProcGone(io: std.Io, pid: i64) !void {
+    var attempt: usize = 0;
+    while (attempt < 200) : (attempt += 1) {
+        var path_buffer: [64]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buffer, "/proc/{d}", .{pid});
+        const exists = blk: {
+            std.Io.Dir.accessAbsolute(io, path, .{}) catch break :blk false;
+            break :blk true;
+        };
+        if (!exists) return;
+        try io.sleep(std.Io.Duration.fromNanoseconds(10 * std.time.ns_per_ms), .awake);
+    }
+    return error.ProcessStillAlive;
+}
+
+test "integration: timeout kills the child process group and grandchild" {
+    // The /proc check and process-group semantics are Linux-specific.
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var result = try harnessz.bench.process.runProcessCapture(alloc, io, .{
+        .argv = &.{bench_child.child_exe},
+        .benchmark = "tree",
+        .warmup_iterations = 0,
+        .iterations = 1,
+        .timeout_ns = 200 * std.time.ns_per_ms,
+    });
+    defer result.deinit(alloc);
+
+    try std.testing.expect(result.timed_out);
+    try std.testing.expectEqual(@as(usize, 0), result.response.samples_ns.len);
+
+    const child_pid = try diagnosticNumber(result.stderr, "pid=");
+    const child_pgid = try diagnosticNumber(result.stderr, " pgid=");
+    const grandchild_pid = try diagnosticNumber(result.stderr, " grandchild=");
+    try std.testing.expectEqual(child_pid, child_pgid);
+
+    try expectProcGone(io, grandchild_pid);
+    try expectProcGone(io, child_pid);
+}
+
+test "integration: baseline report text and JSON" {
+    const alloc = std.testing.allocator;
+    const baseline_samples = [_]u64{ 100, 100, 100 };
+    const current_samples = [_]u64{ 130, 130, 130 };
+
+    const store: harnessz.baseline.Store = .{
+        .allocator = alloc,
+        .entries = &.{.{
+            .name = "render",
+            .samples_ns = &baseline_samples,
+            .summary = harnessz.stats.summarize(u64, &baseline_samples),
+        }},
+    };
+    const current = [_]harnessz.baseline.Entry{.{
+        .name = "render",
+        .samples_ns = &current_samples,
+        .summary = harnessz.stats.summarize(u64, &current_samples),
+    }};
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    var report = try harnessz.baseline.report.report(
+        alloc,
+        &out.writer,
+        &store,
+        &current,
+        .{},
+    );
+    defer report.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), report.regressions);
+    try std.testing.expect(!report.ok());
+    try std.testing.expect(std.mem.find(u8, out.written(), "REGRESSED") != null);
+
+    const json = try report.toJson(alloc);
+    defer alloc.free(json);
+    try std.testing.expect(std.mem.find(u8, json, "\"regressions\": 1") != null);
+    try std.testing.expect(std.mem.find(u8, json, "\"status\": \"regressed\"") != null);
 }
