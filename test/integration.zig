@@ -312,6 +312,102 @@ test "integration: ULP and complex oracles" {
     try std.testing.expect(!harnessz.oracle.compareComplexSlices(f64, &expected, &actual, .{}).equal);
 }
 
+test "integration: golden directory and structural JSON oracle" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const expected = [_]harnessz.golden.DirEntry{
+        .{ .relative_path = "config.json", .bytes = "{\"b\":1,\"a\":2}" },
+        .{ .relative_path = "nested/data.bin", .bytes = "\x00\x01" },
+    };
+    var created = try harnessz.golden.expectDirectory(
+        io,
+        tmp.dir,
+        "golden-tree",
+        &expected,
+        .{ .update = true, .allocator = alloc, .report = false },
+    );
+    defer created.deinit();
+    try std.testing.expectEqual(harnessz.golden.DirOutcome.created, created.outcome);
+
+    var matched = try harnessz.golden.expectDirectory(
+        io,
+        tmp.dir,
+        "golden-tree",
+        &expected,
+        .{ .allocator = alloc, .report = false },
+    );
+    defer matched.deinit();
+    try std.testing.expect(matched.ok());
+
+    var json_report = try harnessz.oracle.compareJson(
+        "{\"a\":2,\"b\":[1,2]}",
+        "{\"b\":[1,2],\"a\":2}",
+        .{},
+    );
+    defer json_report.deinit();
+    try std.testing.expect(json_report.ok());
+}
+
+test "integration: evidence test-name validation" {
+    const alloc = std.testing.allocator;
+    var manifest: harnessz.evidence.Manifest = .{
+        .allocator = alloc,
+        .entries = &.{.{
+            .id = "feature",
+            .test_names = &.{ "known test", "stale test" },
+        }},
+    };
+    const known = [_][]const u8{"known test"};
+    var report = try manifest.validateTests(&known);
+    defer report.deinit();
+    try std.testing.expect(!report.valid());
+    try std.testing.expectEqual(@as(usize, 2), report.total_tests);
+    try std.testing.expectEqualStrings("feature", report.unknown[0].entry_id);
+    try std.testing.expectEqualStrings("stale test", report.unknown[0].name);
+}
+
+test "integration: significant bench gate and fingerprint enforcement" {
+    const baseline = [_]u64{ 100, 101, 99, 100, 102, 100 };
+    const candidate = [_]u64{ 50, 51, 49, 50, 52, 50 };
+    const comparison = harnessz.bench.Comparison.fromSamples(&baseline, &candidate);
+    try std.testing.expect(comparison.significant);
+    try std.testing.expect(comparison.gateSignificant(1.5, 0.01));
+    try std.testing.expect(!comparison.gateSignificant(3.0, 0.01));
+
+    const store: harnessz.baseline.Store = .{
+        .entries = &.{.{
+            .name = "render",
+            .environment_fingerprint = "machine-a/release-safe",
+            .samples_ns = &baseline,
+            .summary = harnessz.stats.summarize(u64, &baseline),
+        }},
+    };
+    _ = try store.compare("render", &candidate, .{
+        .require_fingerprint = true,
+        .expected_fingerprint = "machine-a/release-safe",
+    });
+    try std.testing.expectError(error.EnvironmentMismatch, store.compare(
+        "render",
+        &candidate,
+        .{
+            .require_fingerprint = true,
+            .expected_fingerprint = "machine-b/debug",
+        },
+    ));
+}
+
+test "integration: bench environment probes" {
+    const rss = harnessz.bench.peakRssBytes(std.testing.io) catch
+        return error.SkipZigTest;
+    try std.testing.expect(rss > 0);
+
+    const mask = harnessz.bench.affinityMask() catch return error.SkipZigTest;
+    try std.testing.expect(mask.count() > 0);
+}
+
 test "integration: bench blackBox keeps a value observable" {
     var sink: u64 = 0;
     const value = @as(u64, 6) * 7;

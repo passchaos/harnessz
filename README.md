@@ -10,15 +10,15 @@ Zig 0.16.0 and uses `std.Io` with an explicit `io` value.
 
 | Module | Purpose |
 | --- | --- |
-| `golden` | Golden files with create/match/mismatch/update, text/binary modes, optional line-ending, trailing-whitespace, and canonical-JSON normalization |
+| `golden` | Golden files and directory trees with create/match/mismatch/update, text/binary modes, optional line-ending, trailing-whitespace, and canonical-JSON normalization |
 | `snapshot` | Named in-memory or file-backed snapshots with `check`, `checkFmt`, and update mode |
-| `oracle` | Byte/integer/float/complex comparisons, tolerances, ULP distance, NaN/inf/signed-zero handling, Wyhash checksums |
+| `oracle` | Byte/integer/float/complex comparisons, structural JSON comparison, tolerances, ULP distance, NaN/inf/signed-zero handling, Wyhash checksums |
 | `determinism` | Repeated-run byte stability, first divergence, thread-count matrix, real threaded runs with spawn fallback |
-| `stats` | Batch summaries plus streaming Welford accumulation, linear histograms, confidence intervals, and trimmed means |
-| `bench` | Warmup/timed runs, min-time sampling, interleaved A/B comparison, gates, JSON/CSV, `blackBox` |
-| `baseline` | JSON baseline storage, environment fingerprints, median regression detection, and entry updates |
+| `stats` | Batch summaries plus streaming Welford accumulation, linear histograms, confidence intervals, trimmed means, and Welch's t-test |
+| `bench` | Warmup/timed runs, min-time sampling, interleaved A/B comparison, significance gates, CPU pinning, peak RSS, counting allocator, JSON/CSV, `blackBox` |
+| `baseline` | JSON baseline storage, environment fingerprints, optional fingerprint enforcement, median regression detection, and entry updates |
 | `fixture` | `HARNESSZ_FIXTURES` / `testdata/` resolution and workspace helpers |
-| `evidence` | Evidence manifests with JSON round-trip and missing-path validation |
+| `evidence` | Evidence manifests with JSON round-trip, missing-path validation, and test-name validation |
 | `json_canon` | Canonical JSON emission with recursively sorted object keys |
 | `diff` | Line-oriented unified diff used by golden/snapshot diagnostics |
 | `paths` | Shared relative-path validation and existence checks |
@@ -30,6 +30,7 @@ Every public module is exported from `src/root.zig`.
 ```sh
 zig build test
 zig build test -Doptimize=ReleaseSafe
+zig build test -Doptimize=ReleaseFast
 ```
 
 Tests live beside each implementation. Package-level integration tests live in
@@ -77,6 +78,37 @@ text mode. Update mode always writes the original `actual` bytes, never the
 normalized form; normalized-equal comparisons return `.matched` without
 rewriting the file. Binary mode ignores normalization.
 
+### Golden directories
+
+```zig
+const expected = [_]harnessz.golden.DirEntry{
+    .{ .relative_path = "a.txt", .bytes = "alpha" },
+    .{ .relative_path = "nested/b.bin", .bytes = &blob },
+};
+
+var report = try harnessz.golden.expectDirectory(io, dir, "golden/render", &expected, .{
+    .allocator = gpa,
+    .update = false, // or set HARNESSZ_UPDATE=1
+    .max_files = 4096,
+    .max_total_bytes = 256 * 1024 * 1024,
+    .max_file_bytes = 64 * 1024 * 1024,
+});
+defer report.deinit();
+if (!report.ok()) {
+    for (report.changes) |change| {
+        // change.kind: missing, extra, changed, or created
+        // change.relative_path
+    }
+}
+```
+
+Traversal is deterministic: files are collected recursively and sorted by
+relative path. Compare mode reports `missing`, `extra`, and `changed` files
+without mutating the tree, and a missing root is reported as every expected
+file missing. Update mode creates missing files, rewrites changed files, and
+deletes extra files. Both modes enforce `max_files`, `max_total_bytes`, and
+`max_file_bytes`; duplicate expected paths return `error.DuplicateEntry`.
+
 ## Snapshots
 
 ```zig
@@ -115,6 +147,17 @@ const complex_report = harnessz.oracle.compareComplexSlices(
     actual_complex,
     .{ .abs_tolerance = 1e-9 },
 );
+
+var json_report = try harnessz.oracle.compareJson(
+    "{\"b\":[1,2],\"a\":2}",
+    "{\"a\":2,\"b\":[1,2]}",
+    .{ .abs_tolerance = 1e-9, .rel_tolerance = 1e-6 },
+);
+defer json_report.deinit();
+if (!json_report.ok()) {
+    // json_report.first_difference.?.path, e.g. "a.b[2].c"
+    // json_report.first_difference.?.kind
+}
 ```
 
 Float tolerance passes when:
@@ -133,6 +176,12 @@ same-sign infinities are equal. `ulp_distance` is `maxInt(u64)` when the values
 are not comparable. `compareComplexSlices` applies the `FloatOptions` policy to
 both the real and imaginary parts; one complex element counts as one mismatch
 when either part differs.
+
+`compareJson` parses both documents with `std.json` and compares them
+structurally. Object key order is ignored, array order is significant, and
+integer/float values compare numerically. `abs_tolerance` and `rel_tolerance`
+use the same formula as float slices. The first difference is reported as a
+path (`a.b[2].c`), and invalid JSON returns `error.InvalidJson`.
 
 ## Determinism
 
@@ -224,6 +273,19 @@ not an exact Student-t interval. `trimmedMean` discards
 `floor(len * trim_fraction)` values from each end, with `trim_fraction` in
 `[0, 0.5)`.
 
+Welch's unequal-variance t-test:
+
+```zig
+const result = try harnessz.stats.welchTTest(u64, baseline_samples, candidate_samples);
+// result.t, result.degrees_of_freedom, result.p_approx
+```
+
+Both inputs need at least two samples. The p-value is two-sided and uses a
+standard normal approximation (`erfc(|t| / sqrt(2))`) rather than Student's t
+distribution. This is documented and intentionally conservative for small
+samples; the test statistic and degrees of freedom use the exact Welch
+formulas.
+
 ## Benchmarks
 
 ```zig
@@ -265,7 +327,40 @@ const comparison = harnessz.bench.Comparison.fromSamples(
     &.{ 50, 50, 50 },
 );
 try std.testing.expect(comparison.gate(1.5));
+try std.testing.expect(comparison.significant); // p_value <= 0.05
+try std.testing.expect(comparison.gateSignificant(1.5, 0.01));
 ```
+
+`fromSamples` computes `p_value` with `stats.welchTTest` and sets
+`significant` when `p_value <= 0.05`. With fewer than two samples per side the
+p-value is 1 and the comparison is not significant.
+`gateSignificant(min_ratio, max_p_value)` passes only when the ratio gate
+passes, the comparison is significant at 0.05, and `p_value <= max_p_value`.
+The JSON and CSV renderings include both fields.
+
+Measured runs and host controls:
+
+```zig
+var measured = try harnessz.bench.runMeasured(gpa, io, .{ .iterations = 20 }, &ctx, work);
+defer measured.deinit(gpa);
+// measured.timing, measured.peak_rss_bytes, measured.peak_allocated_bytes
+
+try harnessz.bench.pinToCpu(3);          // Linux; error.Unsupported elsewhere
+const cpu = try harnessz.bench.currentCpu();
+const mask = try harnessz.bench.affinityMask();
+const rss = try harnessz.bench.peakRssBytes(io); // VmHWM from /proc/self/status
+
+var counting = harnessz.bench.CountingAllocator.init(gpa);
+const samples = try harnessz.bench.run(counting.allocator(), io, .{}, &ctx, work);
+defer samples.deinit(counting.allocator());
+// counting.currentBytes(), counting.peakBytes()
+```
+
+`runMeasured` passes a counting allocator to the callback while harness
+bookkeeping uses the supplied allocator; peak allocation tracking resets after
+warmup. The counting allocator is not thread-safe and counts requested bytes,
+not underlying allocator overhead. CPU pinning and RSS sampling are Linux-only
+and return `error.Unsupported` on other platforms.
 
 ## Baselines and regression detection
 
@@ -290,6 +385,10 @@ try store.load(io, dir, "bench/baseline.json");
 
 const regression = try store.compare("render", samples.samples_ns, .{
     .max_regression_ratio = 1.05,
+    // Optional: fail with error.EnvironmentMismatch when the recorded
+    // fingerprint differs from the caller's expected fingerprint.
+    .require_fingerprint = true,
+    .expected_fingerprint = fingerprint,
 });
 if (regression.regressed) return error.PerformanceRegression;
 
@@ -316,6 +415,13 @@ Recommended workflow:
 current run is faster. A regression is reported when
 `current_median > baseline_median * max_regression_ratio`. Empty current
 samples and non-positive ratios return `error.InvalidOptions`.
+
+Fingerprint enforcement is opt-in. With `require_fingerprint = true`, `compare`
+returns `error.EnvironmentMismatch` unless the entry's
+`environment_fingerprint` equals `expected_fingerprint`; a missing
+`expected_fingerprint` returns `error.InvalidOptions`. The default
+(`require_fingerprint = false`) keeps the previous behaviour of recording
+fingerprints without enforcing them.
 
 ## Fixtures
 
@@ -358,6 +464,21 @@ Entries carry `id`, `status` (`implemented`, `partial`, `planned`, `deferred`),
 `implementation_paths`, `test_names`, `evidence_paths`, and `notes`.
 `toJson` emits only the manifest schema, not allocator bookkeeping.
 
+Test names can be checked against a list of tests known to the build:
+
+```zig
+var test_report = try manifest.validateTests(&known_test_names);
+defer test_report.deinit();
+if (!test_report.valid()) {
+    for (test_report.unknown) |unknown| {
+        // unknown.entry_id, unknown.name
+    }
+}
+```
+
+`TestValidationReport` references manifest-owned strings and counts every
+declared test name, including duplicates.
+
 ## Environment variables
 
 - `HARNESSZ_UPDATE=1` or `true`: golden and snapshot update mode.
@@ -382,9 +503,17 @@ field. `std.process.Init` in Zig 0.16 exposes the environment at
   threading to the callback. A lane whose spawn fails runs on the caller.
 - Benchmark callbacks must return `u64`; avoid relying on wall-clock
   assertions in tests.
-- `baseline` stores raw nanosecond samples but does not enforce that a loaded
-  baseline's environment fingerprint matches the current environment; callers
-  should compare fingerprints before gating.
+- `baseline` fingerprint enforcement is opt-in via `require_fingerprint`; the
+  default keeps the historical record-only behaviour.
+- `stats.welchTTest` uses a normal approximation for the p-value rather than
+  an exact Student-t tail. Treat very small samples or heavy-tailed data with
+  caution.
+- `bench.pinToCpu`, `bench.currentCpu`, `bench.affinityMask`, and
+  `bench.peakRssBytes` are Linux-only and return `error.Unsupported`
+  elsewhere. `CountingAllocator` is single-threaded and counts requested
+  bytes, not allocator overhead.
+- Golden directory update mode prunes extra files under the managed root.
+  Compare mode never mutates the tree.
 - `std.fs` file APIs are not used; `std.fs.path` remains in use for pure path
   manipulation. Directory creation uses `std.Io.Dir.createDirPath` (the Zig
   0.16 name for the recursive make-path operation).

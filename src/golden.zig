@@ -6,10 +6,20 @@ const Allocator = std.mem.Allocator;
 const diff = @import("diff.zig");
 const env = @import("env.zig");
 const normalize = @import("golden/normalize.zig");
+const golden_dir = @import("golden/dir.zig");
 const oracle = @import("oracle.zig");
 const paths = @import("paths.zig");
 
 pub const Mode = enum { text, binary };
+
+/// Golden-directory comparison and update.
+pub const DirEntry = golden_dir.Entry;
+pub const DirOptions = golden_dir.Options;
+pub const DirOutcome = golden_dir.Outcome;
+pub const DirChange = golden_dir.Change;
+pub const DirChangeKind = golden_dir.ChangeKind;
+pub const DirReport = golden_dir.Report;
+pub const expectDirectory = golden_dir.expectDirectory;
 
 pub const NormalizeOptions = normalize.NormalizeOptions;
 
@@ -482,4 +492,5 @@ test "golden normalize: binary mode ignores text normalization" {
 
 test {
     std.testing.refAllDecls(normalize);
+    std.testing.refAllDecls(golden_dir);
 }

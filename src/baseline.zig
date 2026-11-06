@@ -28,6 +28,13 @@ pub const Options = struct {
     /// `current_median > baseline_median * max_regression_ratio`.
     /// Values greater than 1 allow some noise; 1.0 flags any slowdown.
     max_regression_ratio: f64 = 1.05,
+    /// When true, `compare` requires the entry's environment fingerprint to
+    /// equal `expected_fingerprint` and returns `error.EnvironmentMismatch`
+    /// otherwise.
+    require_fingerprint: bool = false,
+    /// Caller-supplied fingerprint used when `require_fingerprint` is true.
+    /// Missing values make `compare` return `error.InvalidOptions`.
+    expected_fingerprint: ?[]const u8 = null,
 };
 
 pub const Regression = struct {
@@ -201,6 +208,14 @@ pub const Store = struct {
 
         const entry = self.get(name) orelse return error.MissingBaseline;
         if (entry.samples_ns.len == 0) return error.InvalidBaseline;
+
+        if (options.require_fingerprint) {
+            const expected = options.expected_fingerprint orelse
+                return error.InvalidOptions;
+            if (!std.mem.eql(u8, entry.environment_fingerprint, expected)) {
+                return error.EnvironmentMismatch;
+            }
+        }
 
         const baseline_median = stats.median(u64, entry.samples_ns);
         const current_median = stats.median(u64, current_samples);
@@ -397,6 +412,64 @@ test "baseline: regression comparison" {
         &faster,
         .{ .max_regression_ratio = 0 },
     ));
+}
+
+test "baseline: required fingerprint matches" {
+    const baseline_samples = [_]u64{ 100, 100, 100 };
+    const store: Store = .{
+        .entries = &.{.{
+            .name = "work",
+            .environment_fingerprint = "x86_64/linux/cpu8/release-safe",
+            .samples_ns = &baseline_samples,
+            .summary = stats.summarize(u64, &baseline_samples),
+        }},
+    };
+    const current = [_]u64{ 90, 90, 90 };
+
+    const regression = try store.compare("work", &current, .{
+        .require_fingerprint = true,
+        .expected_fingerprint = "x86_64/linux/cpu8/release-safe",
+    });
+    try std.testing.expect(!regression.regressed);
+
+    try std.testing.expectError(error.EnvironmentMismatch, store.compare(
+        "work",
+        &current,
+        .{
+            .require_fingerprint = true,
+            .expected_fingerprint = "x86_64/linux/cpu8/debug",
+        },
+    ));
+
+    try std.testing.expectError(error.InvalidOptions, store.compare(
+        "work",
+        &current,
+        .{ .require_fingerprint = true },
+    ));
+}
+
+test "baseline: fingerprint enforcement is opt-in" {
+    const baseline_samples = [_]u64{ 100, 100, 100 };
+    const store: Store = .{
+        .entries = &.{.{
+            .name = "work",
+            .environment_fingerprint = "recorded",
+            .samples_ns = &baseline_samples,
+            .summary = stats.summarize(u64, &baseline_samples),
+        }},
+    };
+    const current = [_]u64{ 100, 100, 100 };
+
+    // Default behaviour is unchanged: mismatched fingerprints are ignored.
+    const default_compare = try store.compare("work", &current, .{});
+    try std.testing.expect(!default_compare.regressed);
+    try std.testing.expectEqual(@as(f64, 1), default_compare.speedup);
+
+    const explicit_but_off = try store.compare("work", &current, .{
+        .require_fingerprint = false,
+        .expected_fingerprint = "different",
+    });
+    try std.testing.expect(!explicit_but_off.regressed);
 }
 
 test "baseline: environment fingerprint includes target and tag" {

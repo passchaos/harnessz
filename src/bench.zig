@@ -8,6 +8,17 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const stats = @import("stats.zig");
 
+/// Host environment controls: CPU pinning, peak RSS, and a counting
+/// allocator.
+pub const system = @import("bench/system.zig");
+
+pub const CpuMask = system.CpuMask;
+pub const CountingAllocator = system.CountingAllocator;
+pub const affinityMask = system.affinityMask;
+pub const pinToCpu = system.pinToCpu;
+pub const currentCpu = system.currentCpu;
+pub const peakRssBytes = system.peakRssBytes;
+
 /// Keep `value` observable to the optimizer. Zig 0.16 exposes this through
 /// `std.mem.doNotOptimizeAway`, which emits an empty volatile asm block (or a
 /// volatile store on backends without asm support).
@@ -80,14 +91,29 @@ pub const Comparison = struct {
     a: stats.Summary,
     b: stats.Summary,
     rounds: usize,
+    /// Two-sided Welch t-test p-value using the normal approximation. Values
+    /// at or below `significance_alpha` set `significant`.
+    p_value: f64 = 1,
+    /// `p_value <= significance_alpha`.
+    significant: bool = false,
+
+    /// Conventional alpha used for the `significant` convenience flag.
+    pub const significance_alpha: f64 = 0.05;
 
     /// Build a comparison from already-collected samples. This makes gate
     /// logic testable without running a timer.
+    ///
+    /// Welch's test needs at least two samples per side. When either side is
+    /// shorter, `p_value` is 1 and `significant` is false.
     pub fn fromSamples(a_samples: []const u64, b_samples: []const u64) Comparison {
+        const welch_result = stats.welchTTest(u64, a_samples, b_samples) catch
+            stats.WelchResult{ .t = 0, .degrees_of_freedom = 0, .p_approx = 1 };
         return .{
             .a = stats.summarize(u64, a_samples),
             .b = stats.summarize(u64, b_samples),
             .rounds = @min(a_samples.len, b_samples.len),
+            .p_value = welch_result.p_approx,
+            .significant = welch_result.p_approx <= significance_alpha,
         };
     }
 
@@ -108,16 +134,33 @@ pub const Comparison = struct {
         };
     }
 
+    /// Pass when the speedup ratio reaches `min_ratio`, the Welch p-value is
+    /// at most `max_p_value`, and the comparison is significant at the
+    /// conventional 0.05 level. `max_p_value` must be finite and in `[0, 1]`;
+    /// invalid thresholds fail the gate.
+    pub fn gateSignificant(self: Comparison, min_ratio: f64, max_p_value: f64) bool {
+        if (!std.math.isFinite(max_p_value) or max_p_value < 0 or max_p_value > 1) {
+            return false;
+        }
+        return self.gate(min_ratio) and
+            self.significant and
+            self.p_value <= max_p_value;
+    }
+
     pub fn writeJson(self: Comparison, writer: *std.Io.Writer) !void {
         const Wire = struct {
             rounds: usize,
             speedup: f64,
+            p_value: f64,
+            significant: bool,
             a: stats.Summary,
             b: stats.Summary,
         };
         try std.json.Stringify.value(Wire{
             .rounds = self.rounds,
             .speedup = self.speedup(),
+            .p_value = self.p_value,
+            .significant = self.significant,
             .a = self.a,
             .b = self.b,
         }, .{ .whitespace = .indent_2 }, writer);
@@ -135,6 +178,11 @@ pub const Comparison = struct {
         try writer.print("rounds,{d},{d}\n", .{ self.rounds, self.rounds });
         try writeSummaryPairCsv(writer, self.a, self.b);
         try writer.print("speedup,{d},{d}\n", .{ self.speedup(), self.speedup() });
+        try writer.print("p_value,{d},{d}\n", .{ self.p_value, self.p_value });
+        try writer.print("significant,{d},{d}\n", .{
+            @intFromBool(self.significant),
+            @intFromBool(self.significant),
+        });
     }
 
     pub fn toCsv(self: Comparison, alloc: Allocator) ![]u8 {
@@ -142,6 +190,21 @@ pub const Comparison = struct {
         errdefer out.deinit();
         try self.writeCsv(&out.writer);
         return out.toOwnedSlice();
+    }
+};
+
+/// Timing plus optional host measurements captured by `runMeasured`.
+pub const MeasuredStats = struct {
+    timing: Stats,
+    /// Process peak RSS in bytes, or null when unsupported.
+    peak_rss_bytes: ?u64,
+    /// Peak live bytes allocated through the allocator passed to the
+    /// callback during the measured phase.
+    peak_allocated_bytes: u64,
+
+    pub fn deinit(self: *MeasuredStats, alloc: Allocator) void {
+        self.timing.deinit(alloc);
+        self.* = undefined;
     }
 };
 
@@ -154,13 +217,63 @@ pub fn run(
     context: anytype,
     comptime func: anytype,
 ) !Stats {
+    return runInternal(alloc, alloc, io, options, context, func, null);
+}
+
+/// Like `run`, but also reports peak process RSS and peak bytes allocated
+/// through the callback allocator. The callback receives a counting
+/// allocator wrapper; harness bookkeeping still uses `alloc`.
+///
+/// Peak allocation tracking is reset after warmup, so warmup allocations that
+/// are released before the measured phase do not count.
+pub fn runMeasured(
+    alloc: Allocator,
+    io: std.Io,
+    options: Options,
+    context: anytype,
+    comptime func: anytype,
+) !MeasuredStats {
+    var counting = system.CountingAllocator.init(alloc);
+    const timing = try runInternal(
+        alloc,
+        counting.allocator(),
+        io,
+        options,
+        context,
+        func,
+        &counting,
+    );
+    errdefer {
+        var owned = timing;
+        owned.deinit(alloc);
+    }
+
+    // A missing or unreadable procfs entry simply leaves the field null.
+    const rss: ?u64 = system.peakRssBytes(io) catch null;
+    return .{
+        .timing = timing,
+        .peak_rss_bytes = rss,
+        .peak_allocated_bytes = counting.peakBytes(),
+    };
+}
+
+fn runInternal(
+    alloc: Allocator,
+    callback_alloc: Allocator,
+    io: std.Io,
+    options: Options,
+    context: anytype,
+    comptime func: anytype,
+    counting: ?*system.CountingAllocator,
+) !Stats {
     if (options.iterations == 0) return error.InvalidOptions;
 
     var warmup_index: usize = 0;
     while (warmup_index < options.warmup_iterations) : (warmup_index += 1) {
-        const result = try func(context, alloc, io);
+        const result = try func(context, callback_alloc, io);
         blackBox(result);
     }
+    if (counting) |counter| counter.resetPeak();
 
     var samples: std.ArrayList(u64) = .empty;
     errdefer samples.deinit(alloc);
@@ -179,7 +292,7 @@ pub fn run(
         {
             break;
         }
-        const elapsed = try measure(alloc, io, options.clock, context, func);
+        const elapsed = try measure(callback_alloc, io, options.clock, context, func);
         try samples.append(alloc, elapsed);
         total_ns = total_ns +| elapsed;
     }
@@ -278,202 +391,6 @@ fn safeDiv(numerator: f64, denominator: f64) f64 {
     return numerator / denominator;
 }
 
-const RunContext = struct {
-    calls: usize = 0,
-};
-
-fn countedWork(context: *RunContext, alloc: Allocator, io: std.Io) !u64 {
-    _ = alloc;
-    _ = io;
-    context.calls += 1;
-    return @intCast(context.calls);
-}
-
-test "bench run: structural iteration counts" {
-    const alloc = std.testing.allocator;
-    var context: RunContext = .{};
-    var result = try run(alloc, std.testing.io, .{
-        .warmup_iterations = 2,
-        .iterations = 5,
-    }, &context, countedWork);
-    defer result.deinit(alloc);
-
-    try std.testing.expectEqual(@as(usize, 7), context.calls);
-    try std.testing.expectEqual(@as(usize, 5), result.samples_ns.len);
-    try std.testing.expectEqual(@as(usize, 5), result.distribution.count);
-    try std.testing.expectEqual(@as(usize, 2), result.warmup_iterations);
-}
-
-test "bench run: min-time sampling is bounded structurally" {
-    const alloc = std.testing.allocator;
-    var context: RunContext = .{};
-    var result = try run(alloc, std.testing.io, .{
-        .warmup_iterations = 0,
-        .iterations = 2,
-        .min_time_ns = 1,
-        .max_iterations = 6,
-    }, &context, countedWork);
-    defer result.deinit(alloc);
-
-    try std.testing.expect(result.samples_ns.len >= 2);
-    try std.testing.expect(result.samples_ns.len <= 6);
-    try std.testing.expectEqual(result.samples_ns.len, context.calls);
-}
-
-test "bench run: zero iterations is invalid" {
-    const alloc = std.testing.allocator;
-    var context: RunContext = .{};
-    try std.testing.expectError(error.InvalidOptions, run(
-        alloc,
-        std.testing.io,
-        .{ .iterations = 0 },
-        &context,
-        countedWork,
-    ));
-}
-
-const OrderContext = struct {
-    order: *std.ArrayList(u8),
-    alloc: Allocator,
-    calls: usize = 0,
-};
-
-fn orderA(context: *OrderContext, alloc: Allocator, io: std.Io) !u64 {
-    _ = alloc;
-    _ = io;
-    try context.order.append(context.alloc, 'A');
-    context.calls += 1;
-    return 1;
-}
-
-fn orderB(context: *OrderContext, alloc: Allocator, io: std.Io) !u64 {
-    _ = alloc;
-    _ = io;
-    try context.order.append(context.alloc, 'B');
-    context.calls += 1;
-    return 2;
-}
-
-test "bench compare: structural rounds and alternating order" {
-    const alloc = std.testing.allocator;
-    var order: std.ArrayList(u8) = .empty;
-    defer order.deinit(alloc);
-
-    var ctx_a: OrderContext = .{ .order = &order, .alloc = alloc };
-    var ctx_b: OrderContext = .{ .order = &order, .alloc = alloc };
-
-    const comparison = try compare(
-        alloc,
-        std.testing.io,
-        .{ .warmup_iterations = 0, .iterations = 4 },
-        &ctx_a,
-        orderA,
-        &ctx_b,
-        orderB,
-    );
-
-    try std.testing.expectEqualStrings("ABBAABBA", order.items);
-    try std.testing.expectEqual(@as(usize, 4), comparison.rounds);
-    try std.testing.expectEqual(@as(usize, 4), comparison.a.count);
-    try std.testing.expectEqual(@as(usize, 4), comparison.b.count);
-    try std.testing.expectEqual(@as(usize, 4), ctx_a.calls);
-    try std.testing.expectEqual(@as(usize, 4), ctx_b.calls);
-}
-
-test "bench compare: warmup calls both sides" {
-    const alloc = std.testing.allocator;
-    var order: std.ArrayList(u8) = .empty;
-    defer order.deinit(alloc);
-
-    var ctx_a: OrderContext = .{ .order = &order, .alloc = alloc };
-    var ctx_b: OrderContext = .{ .order = &order, .alloc = alloc };
-
-    _ = try compare(
-        alloc,
-        std.testing.io,
-        .{ .warmup_iterations = 2, .iterations = 1 },
-        &ctx_a,
-        orderA,
-        &ctx_b,
-        orderB,
-    );
-    try std.testing.expectEqual(@as(usize, 3), ctx_a.calls);
-    try std.testing.expectEqual(@as(usize, 3), ctx_b.calls);
-}
-
-test "bench gate: synthetic samples" {
-    const baseline = [_]u64{ 100, 100, 100, 100 };
-    const candidate = [_]u64{ 50, 50, 50, 50 };
-    const comparison = Comparison.fromSamples(&baseline, &candidate);
-
-    try std.testing.expectEqual(@as(f64, 2), comparison.speedup());
-    try std.testing.expect(comparison.gate(1.5));
-    try std.testing.expect(comparison.gate(2.0));
-    try std.testing.expect(!comparison.gate(2.5));
-
-    const gate_result = comparison.gateResult(1.5);
-    try std.testing.expect(gate_result.passed);
-    try std.testing.expectEqual(@as(f64, 2), gate_result.speedup);
-    try std.testing.expectEqual(@as(f64, 1.5), gate_result.min_ratio);
-
-    const regression = Comparison.fromSamples(&candidate, &baseline);
-    try std.testing.expect(!regression.gate(1.0));
-}
-
-test "bench comparison: JSON and CSV output" {
-    const alloc = std.testing.allocator;
-    const baseline = [_]u64{ 100, 100, 100 };
-    const candidate = [_]u64{ 80, 80, 80 };
-    const comparison = Comparison.fromSamples(&baseline, &candidate);
-
-    const json = try comparison.toJson(alloc);
-    defer alloc.free(json);
-    try std.testing.expect(std.mem.find(u8, json, "\"speedup\"") != null);
-    try std.testing.expect(std.mem.find(u8, json, "\"median\"") != null);
-
-    const csv = try comparison.toCsv(alloc);
-    defer alloc.free(csv);
-    try std.testing.expect(std.mem.find(u8, csv, "metric,a,b") != null);
-    try std.testing.expect(std.mem.find(u8, csv, "median_ns") != null);
-}
-
-test "bench stats: JSON and CSV output" {
-    const alloc = std.testing.allocator;
-    var context: RunContext = .{};
-    var result = try run(alloc, std.testing.io, .{
-        .warmup_iterations = 0,
-        .iterations = 3,
-    }, &context, countedWork);
-    defer result.deinit(alloc);
-
-    const json = try result.toJson(alloc);
-    defer alloc.free(json);
-    try std.testing.expect(std.mem.find(u8, json, "\"iterations\"") != null);
-    try std.testing.expect(std.mem.find(u8, json, "\"median\"") != null);
-
-    const csv = try result.toCsv(alloc);
-    defer alloc.free(csv);
-    try std.testing.expect(std.mem.find(u8, csv, "metric,value") != null);
-    try std.testing.expect(std.mem.find(u8, csv, "median_ns") != null);
-}
-
-fn computeObservableValue(input: u64) u64 {
-    return input * 3 + 1;
-}
-
-test "bench blackBox: computed value survives through a volatile sink" {
-    var sink: u64 = 0;
-    const value = computeObservableValue(7);
-    blackBox(value);
-
-    const volatile_sink: *volatile u64 = &sink;
-    volatile_sink.* = value;
-    try std.testing.expectEqual(@as(u64, 22), volatile_sink.*);
-
-    // Pointers and arrays are also accepted by the generic helper.
-    var array = [_]u64{ 1, 2, 3 };
-    blackBox(&array);
-    blackBox(array);
-    const volatile_array: *volatile [3]u64 = &array;
-    try std.testing.expectEqual(@as(u64, 2), volatile_array.*[1]);
+test {
+    _ = @import("bench_test.zig");
 }

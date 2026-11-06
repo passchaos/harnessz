@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const streaming = @import("stats/streaming.zig");
+const welch = @import("stats/welch.zig");
 
 pub const Summary = @import("stats/summary.zig").Summary;
 
@@ -14,6 +15,13 @@ pub const ConfidenceInterval = streaming.ConfidenceInterval;
 pub const confidenceIntervalMean = streaming.confidenceIntervalMean;
 /// Mean after symmetric trimming of the sorted samples.
 pub const trimmedMean = streaming.trimmedMean;
+
+/// Welch's unequal-variance t-test with a normal-approximation p-value.
+pub const WelchResult = welch.WelchResult;
+pub const welchTTest = welch.welchTTest;
+pub const twoSidedNormalPValue = welch.twoSidedNormalPValue;
+pub const normalCdf = welch.normalCdf;
+pub const erfc = welch.erfc;
 
 /// Population standard deviation.
 pub fn stddev(comptime T: type, values: []const T) f64 {
@@ -239,7 +247,8 @@ test "robust comparison speedup and improvement" {
 }
 
 test {
-    // Force analysis of the streaming submodule so its tests are included in
-    // the package test run.
+    // Force analysis of the submodules so their tests are included in the
+    // package test run.
     std.testing.refAllDecls(streaming);
+    std.testing.refAllDecls(welch);
 }

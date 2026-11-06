@@ -52,6 +52,28 @@ pub const ValidationReport = struct {
     }
 };
 
+pub const UnknownTest = struct {
+    entry_id: []const u8,
+    name: []const u8,
+};
+
+/// Report for `Manifest.validateTests`. The `entry_id` and `name` slices
+/// reference manifest-owned memory and remain valid until `Manifest.deinit`.
+pub const TestValidationReport = struct {
+    total_tests: usize,
+    unknown: []const UnknownTest,
+    allocator: Allocator,
+
+    pub fn valid(self: TestValidationReport) bool {
+        return self.unknown.len == 0;
+    }
+
+    pub fn deinit(self: *TestValidationReport) void {
+        self.allocator.free(self.unknown);
+        self.* = undefined;
+    }
+};
+
 /// Wire representation. Keeping this separate from `Manifest` prevents
 /// allocator/arena bookkeeping fields from entering the JSON schema.
 const Wire = struct {
@@ -160,6 +182,43 @@ pub const Manifest = struct {
             .allocator = self.allocator,
         };
     }
+
+    /// Check every `test_names` entry against `known_tests` and report names
+    /// that do not appear there. Duplicate test names in a manifest entry are
+    /// checked independently. The report references manifest-owned strings.
+    pub fn validateTests(
+        self: *Manifest,
+        known_tests: []const []const u8,
+    ) !TestValidationReport {
+        var unknown: std.ArrayList(UnknownTest) = .empty;
+        errdefer unknown.deinit(self.allocator);
+        var total_tests: usize = 0;
+
+        for (self.entries) |entry| {
+            for (entry.test_names) |name| {
+                total_tests += 1;
+                var found = false;
+                for (known_tests) |known| {
+                    if (std.mem.eql(u8, known, name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try unknown.append(self.allocator, .{
+                        .entry_id = entry.id,
+                        .name = name,
+                    });
+                }
+            }
+        }
+
+        return .{
+            .total_tests = total_tests,
+            .unknown = try unknown.toOwnedSlice(self.allocator),
+            .allocator = self.allocator,
+        };
+    }
 };
 
 test "evidence: JSON round-trip" {
@@ -260,6 +319,78 @@ test "evidence: missing-path validation" {
     try std.testing.expectEqualStrings("src/missing.zig", report.missing[1].path);
     try std.testing.expectEqual(PathKind.implementation, report.missing[1].kind);
     try std.testing.expectEqualStrings("docs/missing.md", report.missing[2].path);
+}
+
+test "evidence: known test names validate" {
+    const alloc = std.testing.allocator;
+    var manifest: Manifest = .{
+        .allocator = alloc,
+        .entries = &.{
+            .{
+                .id = "golden",
+                .test_names = &.{ "golden: first run", "golden: mismatch" },
+            },
+            .{
+                .id = "oracle",
+                .test_names = &.{"oracle: bytes"},
+            },
+            .{ .id = "empty" },
+        },
+    };
+    const known = [_][]const u8{
+        "golden: first run",
+        "golden: mismatch",
+        "oracle: bytes",
+    };
+
+    var report = try manifest.validateTests(&known);
+    defer report.deinit();
+    try std.testing.expect(report.valid());
+    try std.testing.expectEqual(@as(usize, 3), report.total_tests);
+    try std.testing.expectEqual(@as(usize, 0), report.unknown.len);
+}
+
+test "evidence: unknown test names report entry id and name" {
+    const alloc = std.testing.allocator;
+    var manifest: Manifest = .{
+        .allocator = alloc,
+        .entries = &.{
+            .{
+                .id = "golden",
+                .test_names = &.{ "golden: known", "golden: renamed" },
+            },
+            .{
+                .id = "bench",
+                .test_names = &.{ "bench: known", "bench: missing" },
+            },
+        },
+    };
+    const known = [_][]const u8{ "golden: known", "bench: known" };
+
+    var report = try manifest.validateTests(&known);
+    defer report.deinit();
+    try std.testing.expect(!report.valid());
+    try std.testing.expectEqual(@as(usize, 4), report.total_tests);
+    try std.testing.expectEqual(@as(usize, 2), report.unknown.len);
+    try std.testing.expectEqualStrings("golden", report.unknown[0].entry_id);
+    try std.testing.expectEqualStrings("golden: renamed", report.unknown[0].name);
+    try std.testing.expectEqualStrings("bench", report.unknown[1].entry_id);
+    try std.testing.expectEqualStrings("bench: missing", report.unknown[1].name);
+}
+
+test "evidence: empty known list reports every test name" {
+    const alloc = std.testing.allocator;
+    var manifest: Manifest = .{
+        .allocator = alloc,
+        .entries = &.{.{
+            .id = "only",
+            .test_names = &.{ "a", "b" },
+        }},
+    };
+    var report = try manifest.validateTests(&.{});
+    defer report.deinit();
+    try std.testing.expectEqual(@as(usize, 2), report.total_tests);
+    try std.testing.expectEqual(@as(usize, 2), report.unknown.len);
 }
 
 test "evidence: all paths present validates" {

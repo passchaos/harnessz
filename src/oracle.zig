@@ -4,6 +4,7 @@ const std = @import("std");
 const float = @import("oracle/float.zig");
 const ulp = @import("oracle/ulp.zig");
 const complex = @import("oracle/complex.zig");
+const json = @import("oracle/json.zig");
 
 pub const FloatOptions = float.FloatOptions;
 pub const FloatReport = float.FloatReport;
@@ -11,6 +12,12 @@ pub const UlpReport = ulp.UlpReport;
 pub const UlpReason = ulp.UlpReason;
 pub const compareUlp = ulp.compareUlp;
 pub const compareComplexSlices = complex.compareComplexSlices;
+
+pub const JsonOptions = json.Options;
+pub const JsonDifference = json.Difference;
+pub const JsonDifferenceKind = json.DifferenceKind;
+pub const JsonReport = json.Report;
+pub const compareJson = json.compareJson;
 
 pub const Report = struct {
     equal: bool,
@@ -130,6 +137,7 @@ test {
     // the package test run.
     std.testing.refAllDecls(ulp);
     std.testing.refAllDecls(complex);
+    std.testing.refAllDecls(json);
 }
 
 test "bytes: exact match" {
