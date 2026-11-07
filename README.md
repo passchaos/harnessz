@@ -372,9 +372,10 @@ calling thread; save `affinityMask()` and restore it when the benchmark
 finishes.
 
 For already type-erased callbacks, `runRuntime(alloc, io, options, context,
-func)` uses the same warmup and sampling loop. `Stats.last_result` records the
-last measured callback result, which is how the process protocol carries a
-deterministic checksum.
+func)` uses the same warmup and sampling loop. `runMeasuredRuntime` is its
+memory-measuring counterpart. `Stats.last_result` records the last measured
+callback result, which is how the process protocol carries a deterministic
+checksum.
 
 ## Process-isolated benchmarks
 

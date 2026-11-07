@@ -297,7 +297,8 @@ pub fn runRuntime(
 
 /// Like `run`, but also reports peak process RSS and peak bytes allocated
 /// through the callback allocator. The callback receives a counting
-/// allocator wrapper; harness bookkeeping still uses `alloc`.
+/// allocator wrapper; harness bookkeeping still uses `alloc`. The wrapper is
+/// not thread-safe, so the callback must not share it across threads.
 ///
 /// Peak allocation tracking is reset after warmup, so warmup allocations that
 /// are released before the measured phase do not count.
@@ -339,7 +340,8 @@ pub fn runMeasured(
 }
 
 /// Type-erased counterpart to `runMeasured`, used by process-isolated child
-/// benchmarks that report memory metrics alongside timing samples.
+/// benchmarks that report memory metrics alongside timing samples. The
+/// callback allocator is a single-threaded `CountingAllocator` wrapper.
 pub fn runMeasuredRuntime(
     alloc: Allocator,
     io: std.Io,
