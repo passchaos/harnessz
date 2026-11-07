@@ -113,6 +113,9 @@ package. It also owns benchmark baseline storage and regression detection.
 - Artifact tests must cover strict JSON round-trip (unknown/duplicate/missing
   fields, invalid paths/digests, duplicate paths), verification of matching,
   mismatched, missing, and extra files, save/load, and the empty manifest.
+- Policy tests must cover a valid configuration, build-mode mismatch and the
+  empty-mode opt-out, each sample-count bound, inconsistent policy bounds, the
+  deterministic first violation, and descriptions for every violation.
 - Golden directory tests must cover create/update/match, missing/extra/changed
   detection, update-mode pruning, deterministic report ordering, and bounds.
 - JSON oracle tests must cover reordered keys, array order, numeric tolerance,
@@ -160,6 +163,11 @@ package. It also owns benchmark baseline storage and regression detection.
   results; an empty registry yields an empty result. `find(name)` returns a
   benchmark's stats, and `toEntries` borrows names/samples for baseline
   reporting.
+- `bench.validatePolicy(build_mode, options, policy)` rejects a build-mode
+  mismatch and out-of-bounds warmup/iterations/batch size with typed errors;
+  `bench.policy.check` returns the first `PolicyViolation` and
+  `bench.policy.describe` renders it. Empty `required_build_mode` disables the
+  build check; inconsistent bounds return `error.InvalidPolicy`.
 - `bench.pinToCpu`, `bench.currentCpu`, `bench.affinityMask`, and
   `bench.peakRssBytes` are Linux-only. Tests must skip on
   `error.Unsupported`, and pinning tests must restore the original mask.

@@ -445,6 +445,29 @@ suite and releases partial results. `max_benchmarks` bounds the run in
 registration order. Use `bench.process` when each benchmark must run in its
 own process.
 
+### Benchmark policy
+
+`bench.validatePolicy` checks a build-mode tag and sample-count bounds before
+a benchmark runs. This is the runtime counterpart of the release-build
+requirements in downstream benchmark gates:
+
+```zig
+try harnessz.bench.validatePolicy(@tagName(builtin.mode), .{
+    .warmup_iterations = 3,
+    .iterations = 20,
+    .batch_size = 1,
+}, .{
+    .required_build_mode = "ReleaseFast",
+    .min_warmup_iterations = 2,
+    .min_iterations = 10,
+});
+```
+
+`bench.policy.check` returns the first `PolicyViolation` instead of an error;
+`bench.policy.describe` renders a diagnostic. An empty `required_build_mode`
+disables the build check, and inconsistent bounds return
+`error.InvalidPolicy`.
+
 Measured runs and host controls:
 
 ```zig

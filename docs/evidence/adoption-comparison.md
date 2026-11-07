@@ -107,6 +107,7 @@ has no significance model to be robust or non-robust.
 | Capability | Typical internal approach | harnessz |
 | --- | --- | --- |
 | Sampling | One timed block, or repeats whose last block is used | Warmup + N samples, optional batch size and minimum sampling time |
+| Configuration policy | Ad-hoc release/sample checks | `bench.validatePolicy` with typed violations and diagnostics |
 | Named suites | One executable per kernel | `bench.runSuite` over a registry, deterministic text/JSON |
 | Distribution | Elapsed total or per-iteration average | min, max, mean, stddev, median, p90, p99, count |
 | Significance | None; fixed ratio gate | Welch t-test and Mann-Whitney U, both with configurable gates |
@@ -125,7 +126,8 @@ has no significance model to be robust or non-robust.
    context pointer plus `fn (*anyopaque, Allocator, std.Io) anyerror!u64`).
 3. Replace per-file executables with `bench.runSuite` over a registry, or use
    `bench.run` for a single workload and `bench.compareMany` for matrices.
-4. Gate with `gateRobust` (noisy hosts) or `gateSignificant` (clean hosts).
+4. Gate with `gateRobust` (noisy hosts) or `gateSignificant` (clean hosts),
+   and call `bench.validatePolicy` before measuring.
 5. Record samples in `baseline.Store` and gate on `compare`/`baseline.report`.
 6. Fill `Entry.environment_fingerprint` with `provenance.fingerprint`, using
    `provenance.hashTreeHex` for source hashes and `loadVerifiedFile` for

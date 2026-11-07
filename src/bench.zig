@@ -33,6 +33,12 @@ pub const SuiteOptions = suite.SuiteOptions;
 pub const SuiteResult = suite.SuiteResult;
 pub const runSuite = suite.runSuite;
 
+/// Benchmark configuration policy checks.
+pub const policy = @import("bench/policy.zig");
+pub const Policy = policy.Policy;
+pub const PolicyViolation = policy.Violation;
+pub const validatePolicy = policy.validate;
+
 /// Type-erased benchmark callback used by `runRuntime` and the child
 /// registry.
 pub const Runner = struct {
@@ -621,5 +627,6 @@ test {
     std.testing.refAllDecls(watchdog);
     std.testing.refAllDecls(multi);
     std.testing.refAllDecls(suite);
+    std.testing.refAllDecls(policy);
     std.testing.refAllDecls(measure_lib);
 }
