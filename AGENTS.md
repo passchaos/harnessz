@@ -105,7 +105,8 @@ package. It also owns benchmark baseline storage and regression detection.
 - Suite tests must cover registry order, per-benchmark sample counts, callback
   call counts and last results, `max_benchmarks` bounds, the empty registry,
   invalid options, partial-result cleanup on callback failure, deterministic
-  text/JSON, and `toEntries` borrowing.
+  text/JSON, `toEntries` borrowing, and `measure_memory` (peak bytes, positive
+  allocation/free counts, nullable RSS, and the no-memory JSON null).
 - The package integration suite must include a downstream adoption workflow
   test composing suite -> baseline save/load/compare/report -> provenance
   fingerprint and tree hash -> golden -> evidence validation in one temporary
@@ -143,9 +144,10 @@ package. It also owns benchmark baseline storage and regression detection.
   the caller's `max_p_value`; `gateRobust` is the outlier-tolerant counterpart
   using the rank-sum p-value.
 - `bench.runMeasured` passes a `CountingAllocator` to the callback and reports
-  peak RSS (nullable on unsupported platforms) plus peak allocated bytes.
-  `bench.runMeasuredRuntime` is the type-erased counterpart used by the
-  process-isolated child.
+  peak RSS (nullable on unsupported platforms), peak allocated bytes, and
+  allocation/free counts from the measured phase. Warmup resets peaks and
+  counts. `bench.runMeasuredRuntime` is the type-erased counterpart used by
+  the process-isolated child.
 - `bench.Options.batch_size` (default 1) invokes the callback that many times
   per timed sample and stores the per-call average; `Stats.batch_size` records
   it. `protocol.Request.batch_size` defaults to 1 when omitted by older
@@ -165,7 +167,10 @@ package. It also owns benchmark baseline storage and regression detection.
   until `deinit()`. A callback error aborts the suite and releases partial
   results; an empty registry yields an empty result. `find(name)` returns a
   benchmark's stats, and `toEntries` borrows names/samples for baseline
-  reporting.
+  reporting. With `measure_memory = true`, `SuiteResult.memory` records
+  `peak_rss_bytes` (nullable), `peak_allocated_bytes`, `allocation_count`, and
+  `free_count` per benchmark; text/JSON include the same fields and JSON emits
+  `memory: null` when not measured.
 - `bench.validatePolicy(build_mode, options, policy)` rejects a build-mode
   mismatch and out-of-bounds warmup/iterations/batch size with typed errors;
   `bench.policy.check` returns the first `PolicyViolation` and

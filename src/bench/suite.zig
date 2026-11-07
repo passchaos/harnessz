@@ -17,12 +17,26 @@ pub const SuiteOptions = struct {
     run: bench.Options = .{},
     /// Run at most this many benchmarks in registration order. Zero means all.
     max_benchmarks: usize = 0,
+    /// Collect peak RSS, peak allocated bytes, and allocation/free counts for
+    /// each benchmark. Adds one counting-allocator wrapper per run.
+    measure_memory: bool = false,
+};
+
+pub const Memory = struct {
+    /// Process peak RSS in bytes, or null when unsupported.
+    peak_rss_bytes: ?u64 = null,
+    /// Peak live bytes allocated through the callback allocator.
+    peak_allocated_bytes: u64 = 0,
+    allocation_count: u64 = 0,
+    free_count: u64 = 0,
 };
 
 pub const SuiteResult = struct {
     allocator: Allocator = std.heap.page_allocator,
     names: [][]u8 = &.{},
     results: []bench.Stats = &.{},
+    /// Empty unless `SuiteOptions.measure_memory` was true.
+    memory: []Memory = &.{},
     warmup_iterations: usize = 0,
     batch_size: usize = 1,
 
@@ -31,6 +45,7 @@ pub const SuiteResult = struct {
         for (self.names) |name| self.allocator.free(name);
         self.allocator.free(self.names);
         self.allocator.free(self.results);
+        if (self.memory.len != 0) self.allocator.free(self.memory);
         self.* = undefined;
     }
 
@@ -66,14 +81,23 @@ pub const SuiteResult = struct {
         return entries;
     }
 
-    /// Deterministic text table in registration order.
+    /// Deterministic text table in registration order. Memory columns are
+    /// appended when the suite was run with `measure_memory = true`.
     pub fn writeText(self: *const SuiteResult, writer: *std.Io.Writer) !void {
         try writer.writeAll(
-            "benchmark\titerations\tmin_ns\tmean_ns\tmedian_ns\tp90_ns\tp99_ns\n",
+            "benchmark\titerations\tmin_ns\tmean_ns\tmedian_ns\tp90_ns\tp99_ns",
         );
+        const measured_memory = self.memory.len != 0;
+        if (measured_memory) {
+            try writer.writeAll(
+                "\tpeak_rss_bytes\tpeak_allocated_bytes\tallocations\tfrees",
+            );
+        }
+        try writer.writeByte('\n');
+
         for (self.names, 0..) |name, index| {
             const summary = self.results[index].distribution;
-            try writer.print("{s}\t{d}\t{d:.2}\t{d:.2}\t{d:.2}\t{d:.2}\t{d:.2}\n", .{
+            try writer.print("{s}\t{d}\t{d:.2}\t{d:.2}\t{d:.2}\t{d:.2}\t{d:.2}", .{
                 name,
                 self.results[index].samples_ns.len,
                 summary.min,
@@ -82,6 +106,20 @@ pub const SuiteResult = struct {
                 summary.p90,
                 summary.p99,
             });
+            if (measured_memory) {
+                const memory = self.memory[index];
+                if (memory.peak_rss_bytes) |rss| {
+                    try writer.print("\t{d}", .{rss});
+                } else {
+                    try writer.writeAll("\t-");
+                }
+                try writer.print("\t{d}\t{d}\t{d}", .{
+                    memory.peak_allocated_bytes,
+                    memory.allocation_count,
+                    memory.free_count,
+                });
+            }
+            try writer.writeByte('\n');
         }
     }
 
@@ -93,10 +131,18 @@ pub const SuiteResult = struct {
     }
 
     pub fn writeJson(self: *const SuiteResult, writer: *std.Io.Writer) !void {
+        const MemoryWire = struct {
+            peak_rss_bytes: ?u64,
+            peak_allocated_bytes: u64,
+            allocation_count: u64,
+            free_count: u64,
+        };
         const BenchWire = struct {
             name: []const u8,
             iterations: usize,
             summary: stats.Summary,
+            /// Null unless the suite was run with `measure_memory = true`.
+            memory: ?MemoryWire,
         };
         const Wire = struct {
             warmup_iterations: usize,
@@ -108,10 +154,20 @@ pub const SuiteResult = struct {
         const wires = try alloc.alloc(BenchWire, self.names.len);
         defer alloc.free(wires);
         for (wires, 0..) |*wire, index| {
+            const memory: ?MemoryWire = if (self.memory.len == 0)
+                null
+            else
+                .{
+                    .peak_rss_bytes = self.memory[index].peak_rss_bytes,
+                    .peak_allocated_bytes = self.memory[index].peak_allocated_bytes,
+                    .allocation_count = self.memory[index].allocation_count,
+                    .free_count = self.memory[index].free_count,
+                };
             wire.* = .{
                 .name = self.names[index],
                 .iterations = self.results[index].samples_ns.len,
                 .summary = self.results[index].distribution,
+                .memory = memory,
             };
         }
 
@@ -119,7 +175,10 @@ pub const SuiteResult = struct {
             .warmup_iterations = self.warmup_iterations,
             .batch_size = self.batch_size,
             .benchmarks = wires,
-        }, .{ .whitespace = .indent_2 }, writer);
+        }, .{
+            .whitespace = .indent_2,
+            .emit_null_optional_fields = true,
+        }, writer);
     }
 
     pub fn toJson(self: *const SuiteResult, alloc: Allocator) ![]u8 {
@@ -159,6 +218,12 @@ pub fn runSuite(
     var results_initialized: usize = 0;
     errdefer for (results[0..results_initialized]) |*result| result.deinit(alloc);
 
+    const memory: []Memory = if (options.measure_memory)
+        try alloc.alloc(Memory, count)
+    else
+        &.{};
+    errdefer if (memory.len != 0) alloc.free(memory);
+
     var index: usize = 0;
     while (index < count) : (index += 1) {
         const name = registry.nameAt(index).?;
@@ -167,20 +232,39 @@ pub fn runSuite(
         names[index] = try alloc.dupe(u8, name);
         names_initialized += 1;
 
-        results[index] = try bench.runRuntime(
-            alloc,
-            io,
-            options.run,
-            entry.context,
-            entry.run,
-        );
-        results_initialized += 1;
+        if (options.measure_memory) {
+            const measured = try bench.runMeasuredRuntime(
+                alloc,
+                io,
+                options.run,
+                entry.context,
+                entry.run,
+            );
+            results[index] = measured.timing;
+            results_initialized += 1;
+            memory[index] = .{
+                .peak_rss_bytes = measured.peak_rss_bytes,
+                .peak_allocated_bytes = measured.peak_allocated_bytes,
+                .allocation_count = measured.allocation_count,
+                .free_count = measured.free_count,
+            };
+        } else {
+            results[index] = try bench.runRuntime(
+                alloc,
+                io,
+                options.run,
+                entry.context,
+                entry.run,
+            );
+            results_initialized += 1;
+        }
     }
 
     return .{
         .allocator = alloc,
         .names = names,
         .results = results,
+        .memory = memory,
         .warmup_iterations = options.run.warmup_iterations,
         .batch_size = options.run.batch_size,
     };
@@ -254,10 +338,17 @@ test "bench suite: text and JSON reports are deterministic" {
     defer alloc.free(second_json);
     try std.testing.expectEqualStrings(first_json, second_json);
 
+    const ParsedMemory = struct {
+        peak_rss_bytes: ?u64,
+        peak_allocated_bytes: u64,
+        allocation_count: u64,
+        free_count: u64,
+    };
     const ParsedBench = struct {
         name: []const u8,
         iterations: usize,
         summary: stats.Summary,
+        memory: ?ParsedMemory,
     };
     const Parsed = struct {
         warmup_iterations: usize,
@@ -271,6 +362,7 @@ test "bench suite: text and JSON reports are deterministic" {
     try std.testing.expectEqual(@as(usize, 2), parsed.value.benchmarks.len);
     try std.testing.expectEqualStrings("alpha", parsed.value.benchmarks[0].name);
     try std.testing.expectEqual(@as(usize, 2), parsed.value.benchmarks[0].iterations);
+    try std.testing.expect(parsed.value.benchmarks[0].memory == null);
 }
 
 test "bench suite: max_benchmarks bounds registration order" {
@@ -353,4 +445,59 @@ test "bench suite: toEntries borrows names, samples, and summaries" {
     try std.testing.expectEqualStrings("bench", entries[0].name);
     try std.testing.expectEqualStrings("fingerprint", entries[0].environment_fingerprint);
     try std.testing.expectEqual(@as(usize, 2), entries[0].samples_ns.len);
+}
+
+const AllocContext = struct {
+    calls: u64 = 0,
+
+    fn run(context: *anyopaque, allocator: Allocator, _: std.Io) !u64 {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        self.calls += 1;
+        const buffer = try allocator.alloc(u8, 4096);
+        defer allocator.free(buffer);
+        @memset(buffer, 0xab);
+        return buffer.len;
+    }
+};
+
+test "bench suite: optional memory metrics" {
+    const alloc = std.testing.allocator;
+    var registry = registry_mod.Registry.init(alloc);
+    defer registry.deinit();
+
+    var context: AllocContext = .{};
+    try registry.add("alloc", .{ .context = &context, .run = AllocContext.run });
+
+    var suite = try runSuite(alloc, std.testing.io, &registry, .{
+        .run = .{ .warmup_iterations = 1, .iterations = 2 },
+        .measure_memory = true,
+    });
+    defer suite.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), suite.memory.len);
+    try std.testing.expectEqual(@as(u64, 4096), suite.memory[0].peak_allocated_bytes);
+    try std.testing.expect(suite.memory[0].allocation_count > 0);
+    try std.testing.expect(suite.memory[0].free_count > 0);
+    if (suite.memory[0].peak_rss_bytes) |rss| {
+        try std.testing.expect(rss > 0);
+    }
+
+    const text = try suite.toText(alloc);
+    defer alloc.free(text);
+    try std.testing.expect(std.mem.find(u8, text, "peak_allocated_bytes") != null);
+
+    const json = try suite.toJson(alloc);
+    defer alloc.free(json);
+    try std.testing.expect(
+        std.mem.find(u8, json, "\"peak_allocated_bytes\": 4096") != null,
+    );
+
+    var plain = try runSuite(alloc, std.testing.io, &registry, .{
+        .run = .{ .iterations = 1 },
+    });
+    defer plain.deinit();
+    try std.testing.expectEqual(@as(usize, 0), plain.memory.len);
+    const plain_json = try plain.toJson(alloc);
+    defer alloc.free(plain_json);
+    try std.testing.expect(std.mem.find(u8, plain_json, "\"memory\": null") != null);
 }

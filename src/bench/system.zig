@@ -160,6 +160,12 @@ pub const CountingAllocator = struct {
         self.peak_bytes = self.current_bytes;
     }
 
+    /// Reset allocation and free counters without touching live/peak bytes.
+    pub fn resetCounts(self: *CountingAllocator) void {
+        self.allocation_count = 0;
+        self.free_count = 0;
+    }
+
     const vtable: Allocator.VTable = .{
         .alloc = alloc,
         .resize = resize,
@@ -255,6 +261,11 @@ test "counting allocator: current and peak bytes" {
 
     counting.resetPeak();
     try std.testing.expectEqual(@as(u64, 0), counting.peakBytes());
+
+    counting.resetCounts();
+    try std.testing.expectEqual(@as(usize, 0), counting.allocation_count);
+    try std.testing.expectEqual(@as(usize, 0), counting.free_count);
+    try std.testing.expectEqual(@as(u64, 0), counting.currentBytes());
 }
 
 test "counting allocator: allocation failure is not counted" {

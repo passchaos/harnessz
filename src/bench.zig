@@ -295,6 +295,11 @@ pub const MeasuredStats = struct {
     /// Peak live bytes allocated through the allocator passed to the
     /// callback during the measured phase.
     peak_allocated_bytes: u64,
+    /// Successful allocations through the callback allocator during the
+    /// measured phase. Warmup allocations are excluded.
+    allocation_count: u64 = 0,
+    /// Frees through the callback allocator during the measured phase.
+    free_count: u64 = 0,
 
     pub fn deinit(self: *MeasuredStats, alloc: Allocator) void {
         self.timing.deinit(alloc);
@@ -388,6 +393,8 @@ pub fn runMeasured(
         .timing = timing,
         .peak_rss_bytes = rss,
         .peak_allocated_bytes = counting.peakBytes(),
+        .allocation_count = @intCast(counting.allocation_count),
+        .free_count = @intCast(counting.free_count),
     };
 }
 
@@ -421,6 +428,8 @@ pub fn runMeasuredRuntime(
         .timing = timing,
         .peak_rss_bytes = rss,
         .peak_allocated_bytes = counting.peakBytes(),
+        .allocation_count = @intCast(counting.allocation_count),
+        .free_count = @intCast(counting.free_count),
     };
 }
 
@@ -441,7 +450,10 @@ fn runInternal(
         const result = try runner.call(callback_alloc, io);
         blackBox(result);
     }
-    if (counting) |counter| counter.resetPeak();
+    if (counting) |counter| {
+        counter.resetPeak();
+        counter.resetCounts();
+    }
 
     var samples: std.ArrayList(u64) = .empty;
     errdefer samples.deinit(alloc);

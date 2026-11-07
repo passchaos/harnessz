@@ -111,6 +111,7 @@ has no significance model to be robust or non-robust.
 | --- | --- | --- |
 | Sampling | One timed block, or repeats whose last block is used | Warmup + N samples, optional batch size and minimum sampling time |
 | Configuration policy | Ad-hoc release/sample checks | `bench.validatePolicy` with typed violations and diagnostics |
+| Memory metrics | Per-file custom tracking allocators | `bench.runMeasured` and `runSuite(.measure_memory = true)` with peak bytes, peak RSS, allocation/free counts |
 | Named suites | One executable per kernel | `bench.runSuite` over a registry, deterministic text/JSON |
 | Distribution | Elapsed total or per-iteration average | min, max, mean, stddev, median, p90, p99, count |
 | Significance | None; fixed ratio gate | Welch t-test and Mann-Whitney U, both with configurable gates |
@@ -170,7 +171,7 @@ artifact, golden, and baseline APIs.
 | Repository | Keep | Replace |
 | --- | --- | --- |
 | `zev` | SIMD/scalar kernels and the Highway baseline | `BenchmarkResult`, `nsPerIter`, `printResultChecked`, and the `min_ratio` loop with `compareMany`, `gateRobust`, and `baseline.report` |
-| `spectra` | Per-format benchmark kernels and checksums | Per-file `main` argv parsing/timing/output with a registry plus `runSuite`; use `runMeasured` for allocation/RSS numbers |
+| `spectra` | Per-format benchmark kernels and checksums | Per-file `main` argv parsing/timing/output with a registry plus `runSuite`; use `measure_memory = true` for allocation/RSS numbers instead of per-file tracking allocators |
 | `iris` | Renderer/scene setup | The single `Clock.awake.now` block with `bench.runMeasured` or `compareMany` across renderer configurations |
 | `imx` | Codec kernels and reference-library oracles | Ad-hoc byte comparisons with `oracle.compareBytes`/`compareJson`; golden writes with `golden.expectFile`/`expectDirectory`; benchmark mains with `runSuite` |
 | `pdfz` | Corpus cases and performance thresholds | Closure file loading with `provenance.loadVerifiedFile`; artifact descriptors with `artifact.Manifest`; ReleaseFast/sample checks with `bench.validatePolicy`; threshold history with `baseline.Store`/`baseline.report` |

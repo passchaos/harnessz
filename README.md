@@ -459,6 +459,12 @@ suite and releases partial results. `max_benchmarks` bounds the run in
 registration order. Use `bench.process` when each benchmark must run in its
 own process.
 
+Set `measure_memory = true` to wrap each callback allocator with the counting
+allocator. `SuiteResult.memory` then records `peak_rss_bytes` (nullable on
+unsupported platforms), `peak_allocated_bytes`, `allocation_count`, and
+`free_count` for every benchmark; text and JSON reports add the same columns.
+Warmup allocations are excluded from all four metrics.
+
 ### Benchmark policy
 
 `bench.validatePolicy` checks a build-mode tag and sample-count bounds before
@@ -487,7 +493,8 @@ Measured runs and host controls:
 ```zig
 var measured = try harnessz.bench.runMeasured(gpa, io, .{ .iterations = 20 }, &ctx, work);
 defer measured.deinit(gpa);
-// measured.timing, measured.peak_rss_bytes, measured.peak_allocated_bytes
+// measured.timing, measured.peak_rss_bytes, measured.peak_allocated_bytes,
+// measured.allocation_count, measured.free_count
 
 try harnessz.bench.pinToCpu(3);          // Linux; pins the calling thread
 const cpu = try harnessz.bench.currentCpu();
@@ -501,9 +508,9 @@ defer samples.deinit(counting.allocator());
 ```
 
 `runMeasured` passes a counting allocator to the callback while harness
-bookkeeping uses the supplied allocator; peak allocation tracking resets after
-warmup. The counting allocator is not thread-safe and counts requested bytes,
-not underlying allocator overhead. CPU pinning and RSS sampling are Linux-only
+bookkeeping uses the supplied allocator; peak bytes and allocation/free counts
+reset after warmup. The counting allocator is not thread-safe and counts
+requested bytes, not underlying allocator overhead. CPU pinning and RSS sampling are Linux-only
 and return `error.Unsupported` on other platforms. `pinToCpu` pins only the
 calling thread; save `affinityMask()` and restore it when the benchmark
 finishes.
