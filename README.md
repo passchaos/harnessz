@@ -909,9 +909,14 @@ with `error.EnvironmentMismatch` instead of producing a false regression.
 ## Artifact manifests
 
 `artifact.Manifest` records relative paths and SHA-256 digests for build
-artifacts and verifies them against a directory tree.
+artifacts and verifies them against a directory tree. Generate one from a tree,
+or construct it from known hashes:
 
 ```zig
+var generated = try harnessz.artifact.Manifest.fromTree(gpa, io, repo_dir, .{});
+defer generated.deinit();
+try generated.save(io, repo_dir, "bench/artifacts.json");
+
 const entries = [_]harnessz.artifact.Entry{
     .{ .path = "zig-out/bin/render", .sha256 = binary_hash },
     .{ .path = "bench/corpus.json", .sha256 = corpus_hash },

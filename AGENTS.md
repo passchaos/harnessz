@@ -113,7 +113,8 @@ package. It also owns benchmark baseline storage and regression detection.
   workspace.
 - Artifact tests must cover strict JSON round-trip (unknown/duplicate/missing
   fields, invalid paths/digests, duplicate paths), verification of matching,
-  mismatched, missing, and extra files, save/load, and the empty manifest.
+  mismatched, missing, and extra files, save/load, the empty manifest, and
+  `Manifest.fromTree` generation plus a post-generation mismatch.
 - Policy tests must cover a valid configuration, build-mode mismatch and the
   empty-mode opt-out, each sample-count bound, inconsistent policy bounds, the
   deterministic first violation, and descriptions for every violation.
@@ -220,8 +221,10 @@ package. It also owns benchmark baseline storage and regression detection.
   Linux CPU probes degrade to `unknown`.
 - `artifact.Manifest.fromJson` is strict JSON (unknown/duplicate/missing
   fields, invalid paths or digests, and duplicate paths are rejected). It owns
-  its arena; call `deinit()`. `Manifest.init` borrows caller-owned entries.
-  `verify` returns a `VerifyReport` that owns its strings via an arena; call
+  its arena; call `deinit()`. `Manifest.init` borrows caller-owned entries;
+  `Manifest.fromTree` hashes a tree with the provenance traversal rules and
+  owns the resulting entries. `verify` returns a `VerifyReport` that owns its
+  strings via an arena; call
   `deinit()`, and use `ok()` plus `missing`/`mismatched`/`extra`/`present`.
 - `evidence.Manifest.fromJson` owns its arena; call `deinit()`.
   `validateTests` returns a `TestValidationReport` whose slices reference the

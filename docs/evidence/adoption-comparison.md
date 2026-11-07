@@ -174,7 +174,7 @@ artifact, golden, and baseline APIs.
 | `spectra` | Per-format benchmark kernels and checksums | Per-file `main` argv parsing/timing/output with a registry plus `runSuite`; use `measure_memory = true` for allocation/RSS numbers instead of per-file tracking allocators |
 | `iris` | Renderer/scene setup | The single `Clock.awake.now` block with `bench.runMeasured` or `compareMany` across renderer configurations |
 | `imx` | Codec kernels and reference-library oracles | Ad-hoc byte comparisons with `oracle.compareBytes`/`compareJson`; golden writes with `golden.expectFile`/`expectDirectory`; benchmark mains with `runSuite` |
-| `pdfz` | Corpus cases and performance thresholds | Closure file loading with `provenance.loadVerifiedFile`; artifact descriptors with `artifact.Manifest`; ReleaseFast/sample checks with `bench.validatePolicy`; threshold history with `baseline.Store`/`baseline.report` |
+| `pdfz` | Corpus cases and performance thresholds | Closure file loading with `provenance.loadVerifiedFile`; artifact descriptors with `artifact.Manifest.fromTree`/`verify`; ReleaseFast/sample checks with `bench.validatePolicy`; threshold history with `baseline.Store`/`baseline.report` |
 
 The kernels and corpus definitions stay in the downstream repository. The
 shared package only owns sampling, statistics, gates, isolation, provenance,

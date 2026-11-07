@@ -86,6 +86,38 @@ pub const Manifest = struct {
         return out.toOwnedSlice();
     }
 
+    /// Build a manifest by hashing every regular file under `dir` with the
+    /// same traversal rules as `provenance.hashTree` (sorted paths, skipped
+    /// VCS/cache/output directories, bounded file count and total bytes).
+    /// The caller owns the result; call `deinit()`.
+    pub fn fromTree(
+        allocator: Allocator,
+        io: std.Io,
+        dir: std.Io.Dir,
+        options: provenance.TreeOptions,
+    ) !Manifest {
+        const arena = try allocator.create(std.heap.ArenaAllocator);
+        errdefer allocator.destroy(arena);
+        arena.* = .init(allocator);
+        errdefer arena.deinit();
+        const alloc = arena.allocator();
+
+        const listed = try provenance.listTree(alloc, io, dir, options);
+        const entries = try alloc.alloc(Entry, listed.len);
+        for (listed, 0..) |path, index| {
+            entries[index] = .{
+                .path = path,
+                .sha256 = try provenance.hashFileHex(alloc, io, dir, path),
+            };
+        }
+
+        return .{
+            .allocator = allocator,
+            .arena = arena,
+            .artifacts = entries,
+        };
+    }
+
     pub fn save(
         self: Manifest,
         io: std.Io,
@@ -401,4 +433,35 @@ test "artifact: empty manifest verifies cleanly" {
     defer report.deinit();
     try std.testing.expect(report.ok());
     try std.testing.expectEqual(@as(usize, 0), report.total);
+}
+
+test "artifact: fromTree generates a verifiable manifest" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.bin", .data = "alpha" });
+    try tmp.dir.createDirPath(io, "nested");
+    try tmp.dir.writeFile(io, .{ .sub_path = "nested/b.bin", .data = "beta" });
+    try tmp.dir.createDirPath(io, ".git");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".git/ignored", .data = "ignored" });
+
+    var manifest = try Manifest.fromTree(alloc, io, tmp.dir, .{});
+    defer manifest.deinit();
+    try std.testing.expectEqual(@as(usize, 2), manifest.artifacts.len);
+    try std.testing.expectEqualStrings("a.bin", manifest.artifacts[0].path);
+    try std.testing.expectEqualStrings("nested/b.bin", manifest.artifacts[1].path);
+
+    var report = try manifest.verify(io, tmp.dir, .{ .reject_extra = true });
+    defer report.deinit();
+    try std.testing.expect(report.ok());
+    try std.testing.expectEqual(@as(usize, 2), report.present);
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.bin", .data = "changed" });
+    var changed = try manifest.verify(io, tmp.dir, .{});
+    defer changed.deinit();
+    try std.testing.expect(!changed.ok());
+    try std.testing.expectEqual(@as(usize, 1), changed.mismatched.len);
+    try std.testing.expectEqualStrings("a.bin", changed.mismatched[0].path);
 }
