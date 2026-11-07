@@ -85,6 +85,9 @@ package. It also owns benchmark baseline storage and regression detection.
     must leave no `/proc/<pid>` entry for the grandchild or the direct child
     after a timeout (Linux-only test, skip elsewhere). Verify the child is its
     own process-group leader.
+  - Process-isolated suites must aggregate multiple names, record per-entry
+    benchmark failures without stopping, continue after a timeout, and render
+    deterministic text/JSON plus `toEntries` for successful samples.
   - Never assert absolute timings, only structure, counts, checksums, and
     error kinds.
 - Baseline tests must cover opt-in fingerprint matching, mismatch, missing
@@ -235,11 +238,16 @@ package. It also owns benchmark baseline storage and regression detection.
 - Directory creation uses `std.Io.Dir.createDirPath` (the Zig 0.16 recursive
   make-path API).
 - Process isolation lives in `src/bench/protocol.zig`,
-  `src/bench/registry.zig`, `src/bench/child.zig`, and
-  `src/bench/process.zig`. `bench.childMain(alloc, io, registry)` is the
+  `src/bench/registry.zig`, `src/bench/child.zig`, `src/bench/process.zig`, and
+  `src/bench/process_suite.zig`. `bench.childMain(alloc, io, registry)` is the
   argv-free protocol core. Zig 0.16 supplies argv through
   `std.process.Init`, so executables call `bench.child.mainInit(init, &registry)`
   or `childMainArgs` for `--harnessz-list` and `--harnessz-bench=<name>`.
+- `bench.process_suite.run(alloc, io, options)` spawns the child once per name,
+  records benchmark failures/timeouts/parent errors on each `Entry`, and
+  continues with the remaining names. The `Suite` owns entries in an arena;
+  call `deinit()`. `ok()` requires every entry to pass; `toEntries` borrows the
+  successful samples for baseline reporting.
 - Child stdout is protocol-only (one JSON `Response`, or one JSON name array in
   list mode); diagnostics must go to stderr.
 - `protocol.Response.checksum` is an optional additive extension carrying the

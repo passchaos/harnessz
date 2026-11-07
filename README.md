@@ -688,6 +688,38 @@ The package's own `bench/child_main.zig` executable is registered by
 benchmark that spawns a sleeping grandchild and verifies through `/proc` that
 both the child and grandchild are gone after a timeout (Linux only).
 
+### Process-isolated suites
+
+`bench.process_suite.run` spawns the child once per benchmark name, so a
+crash, hang, or timeout in one benchmark does not stop the rest:
+
+```zig
+const names = [_][]const u8{ "decode", "encode", "slow-path" };
+var suite = try harnessz.bench.process_suite.run(gpa, io, .{
+    .argv = &.{"zig-out/bin/my-bench-child"},
+    .names = &names,
+    .run = .{ .warmup_iterations = 2, .iterations = 20 },
+    .timeout_ns = 30 * std.time.ns_per_s,
+});
+defer suite.deinit();
+
+if (!suite.ok()) {
+    for (suite.entries) |entry| {
+        if (!entry.ok()) {
+            std.debug.print("{s}: {s} (timeout={any}, exit={?d})\n", .{
+                entry.name, entry.error_name, entry.timed_out, entry.exit_code,
+            });
+        }
+    }
+}
+```
+
+Each `Entry` carries samples, a summary, memory metrics, checksum, bounded
+stderr, timeout/exit status, and the child's error name/message. Text and JSON
+reports are deterministic. `toEntries` borrows the successful samples for
+baseline reporting. The child executable must register the same names; use the
+`bench.registry.Registry` shown under "Child executable".
+
 ### Process isolation boundaries
 
 This is process isolation, not OS-level sandboxing. The child runs as the same

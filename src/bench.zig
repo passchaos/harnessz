@@ -20,6 +20,10 @@ pub const child = @import("bench/child.zig");
 pub const process = @import("bench/process.zig");
 pub const stderr_capture = @import("bench/stderr_capture.zig");
 pub const watchdog = @import("bench/watchdog.zig");
+pub const process_suite = @import("bench/process_suite.zig");
+pub const ProcessSuiteOptions = process_suite.Options;
+pub const ProcessSuiteResult = process_suite.Suite;
+pub const runProcessSuite = process_suite.run;
 
 /// Interleaved multi-implementation comparison.
 pub const multi = @import("bench/multi.zig");
@@ -640,5 +644,6 @@ test {
     std.testing.refAllDecls(multi);
     std.testing.refAllDecls(suite);
     std.testing.refAllDecls(policy);
+    std.testing.refAllDecls(process_suite);
     std.testing.refAllDecls(measure_lib);
 }

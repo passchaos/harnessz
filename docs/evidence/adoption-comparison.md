@@ -117,7 +117,7 @@ has no significance model to be robust or non-robust.
 | Significance | None; fixed ratio gate | Welch t-test with an exact Student-t tail and Mann-Whitney U, both with configurable gates |
 | Ordering bias | Sequential implementations | Rotating interleaved A/B and N-way comparison |
 | Regression tracking | Ad-hoc thresholds or shell scripts | JSON `baseline.Store`, environment fingerprints, deterministic text/JSON reports |
-| Isolation | Same process; a hang stops the run | Child process, process-group timeout, bounded stderr, protocol-only stdout |
+| Isolation | Same process; a hang stops the run | Child process per benchmark (`process_suite`), process-group timeout, bounded stderr, protocol-only stdout |
 | Provenance | Python scripts or git commands per repo | SHA-256 of bytes/files/source trees, verified artifact loading, strict artifact manifests, and a stable environment fingerprint |
 | Golden data | Per-repo comparison helpers | `golden.expectFile`/`expectDirectory` with update mode, normalization, bounds |
 | Evidence | Markdown conventions checked by hand | `evidence.Manifest` with path and test-name validation |
@@ -170,8 +170,8 @@ artifact, golden, and baseline APIs.
 
 | Repository | Keep | Replace |
 | --- | --- | --- |
-| `zev` | SIMD/scalar kernels and the Highway baseline | `BenchmarkResult`, `nsPerIter`, `printResultChecked`, and the `min_ratio` loop with `compareMany`, `gateRobust`, and `baseline.report` (including Markdown history) |
-| `spectra` | Per-format benchmark kernels and checksums | Per-file `main` argv parsing/timing/output with a registry plus `runSuite`; use `measure_memory = true` for allocation/RSS numbers instead of per-file tracking allocators |
+| `zev` | SIMD/scalar kernels and the Highway baseline | `BenchmarkResult`, `nsPerIter`, `printResultChecked`, and the `min_ratio` loop with `compareMany`, `gateRobust`, and `baseline.report` (including Markdown history); use `process_suite` to keep the one-process-per-kernel isolation of the current executable |
+| `spectra` | Per-format benchmark kernels and checksums | Per-file `main` argv parsing/timing/output with a registry plus `runSuite` (or `process_suite` when each kernel must keep its own process); use `measure_memory = true` for allocation/RSS numbers instead of per-file tracking allocators |
 | `iris` | Renderer/scene setup | The single `Clock.awake.now` block with `bench.runMeasured` or `compareMany` across renderer configurations |
 | `imx` | Codec kernels and reference-library oracles | Ad-hoc byte comparisons with `oracle.compareBytes`/`compareJson`; golden writes with `golden.expectFile`/`expectDirectory`; benchmark mains with `runSuite` |
 | `pdfz` | Corpus cases and performance thresholds | Closure file loading with `provenance.loadVerifiedFile`; artifact descriptors with `artifact.Manifest.fromTree`/`verify`; ReleaseFast/sample checks with `bench.validatePolicy`; threshold history with `baseline.Store`/`baseline.report` |

@@ -969,3 +969,73 @@ test "integration: downstream adoption workflow" {
     defer alloc.free(second_hash);
     try std.testing.expectEqualStrings(first_hash, second_hash);
 }
+
+test "integration: process-isolated suite aggregates results and failures" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const names = [_][]const u8{ "checksum", "call-count", "fail" };
+
+    var suite = try harnessz.bench.process_suite.run(alloc, io, .{
+        .argv = &.{bench_child.child_exe},
+        .names = &names,
+        .run = .{ .warmup_iterations = 0, .iterations = 3 },
+        .timeout_ns = 10 * std.time.ns_per_s,
+    });
+    defer suite.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), suite.count());
+    try std.testing.expect(!suite.ok());
+
+    const checksum = suite.find("checksum").?;
+    try std.testing.expect(checksum.ok());
+    try std.testing.expectEqual(@as(usize, 3), checksum.samples_ns.len);
+    try std.testing.expectEqual(@as(?u64, expectedBenchChecksum()), checksum.checksum);
+
+    const call_count = suite.find("call-count").?;
+    try std.testing.expect(call_count.ok());
+    try std.testing.expectEqual(@as(usize, 3), call_count.samples_ns.len);
+    try std.testing.expectEqual(@as(?u64, 3), call_count.checksum);
+
+    const failure = suite.find("fail").?;
+    try std.testing.expect(!failure.ok());
+    try std.testing.expectEqualStrings("SyntheticBenchFailure", failure.error_name);
+
+    const text = try suite.toText(alloc);
+    defer alloc.free(text);
+    try std.testing.expect(std.mem.find(u8, text, "checksum\t3\t") != null);
+    try std.testing.expect(std.mem.find(u8, text, "SyntheticBenchFailure") != null);
+
+    const json = try suite.toJson(alloc);
+    defer alloc.free(json);
+    try std.testing.expect(
+        std.mem.find(u8, json, "\"error_name\": \"SyntheticBenchFailure\"") != null,
+    );
+
+    const entries = try suite.toEntries(alloc, "suite-fingerprint");
+    defer alloc.free(entries);
+    try std.testing.expectEqual(@as(usize, 2), entries.len);
+}
+
+test "integration: process-isolated suite records a timeout and continues" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const names = [_][]const u8{ "slow", "checksum" };
+
+    var suite = try harnessz.bench.process_suite.run(alloc, io, .{
+        .argv = &.{bench_child.child_exe},
+        .names = &names,
+        .run = .{ .iterations = 1 },
+        .timeout_ns = 100 * std.time.ns_per_ms,
+    });
+    defer suite.deinit();
+
+    const slow = suite.find("slow").?;
+    if (!slow.timed_out and std.mem.eql(u8, slow.error_name, "TimeoutUnavailable")) {
+        return error.SkipZigTest;
+    }
+    try std.testing.expect(slow.timed_out);
+    try std.testing.expect(!slow.ok());
+
+    // The suite continues after the timeout.
+    try std.testing.expect(suite.find("checksum").?.ok());
+}
