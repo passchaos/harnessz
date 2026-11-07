@@ -18,9 +18,9 @@ per-repository infrastructure that `harnessz` can replace or complement.
 | Repository | Internal artifacts | Size | Observed approach | harnessz replacement |
 | --- | --- | --- | --- | --- |
 | `zev` | `bench/compare.zig`, `bench/highway_baseline.cpp` | ~28,500 lines | One large executable; 20 iterations x 5 repeats per kernel; ratio of the last repeat with a `min_ratio` gate; no significance test; implementations measured sequentially | `bench.compareMany` (rotating interleaved N-way), Welch + Mann-Whitney gates, deterministic text/JSON |
-| `spectra` | `bench/*.zig` (141 files) | ~15,000 lines | Per-file `main`; parse argv, warm up, one timed loop, print `elapsed_ns` and a checksum; no distribution or gate | `bench.run`/`runMeasured`, `bench.compareMany`, `baseline.report` |
+| `spectra` | `bench/*.zig` (141 files) | ~15,000 lines | Per-file `main`; parse argv, warm up, one timed loop, print `elapsed_ns` and a checksum; no distribution or gate | `bench.runSuite`, `bench.run`/`runMeasured`, `bench.compareMany`, `baseline.report` |
 | `pdfz` | `tools/benchmark*.py`, `build/benchmark_provenance.zig` | ~15,400 lines | Python policy/artifact pipeline plus Zig provenance: dependency-closure SHA-256, ReleaseFast requirement, feature profile, artifact verification | `bench` sampling/isolation, `provenance.hashTree`/`fingerprint`, `baseline.Store` |
-| `imx` | `examples/bench_*.zig` (91 files), `build_support/*.zig` (85 files) | ~25,000 + ~6,600 lines | Per-codec benchmark executables and build-time oracle scripts; ad-hoc timing and golden checks | `bench`, `oracle`, `golden`, `evidence` |
+| `imx` | `examples/bench_*.zig` (91 files), `build_support/*.zig` (85 files) | ~25,000 + ~6,600 lines | Per-codec benchmark executables and build-time oracle scripts; ad-hoc timing and golden checks | `bench.runSuite`, `oracle`, `golden`, `evidence` |
 | `iris` | `examples/bench*.zig` (9 files) | ~1,900 lines | Single timed render/recording run; prints elapsed nanoseconds; no warmup sampling or statistics | `bench.run`/`runMeasured`, `bench.compareMany`, `baseline` |
 
 ## What the internal style does
@@ -107,6 +107,7 @@ has no significance model to be robust or non-robust.
 | Capability | Typical internal approach | harnessz |
 | --- | --- | --- |
 | Sampling | One timed block, or repeats whose last block is used | Warmup + N samples, optional batch size and minimum sampling time |
+| Named suites | One executable per kernel | `bench.runSuite` over a registry, deterministic text/JSON |
 | Distribution | Elapsed total or per-iteration average | min, max, mean, stddev, median, p90, p99, count |
 | Significance | None; fixed ratio gate | Welch t-test and Mann-Whitney U, both with configurable gates |
 | Ordering bias | Sequential implementations | Rotating interleaved A/B and N-way comparison |
@@ -122,8 +123,8 @@ has no significance model to be robust or non-robust.
 1. Add `harnessz` as a path dependency and import it in the benchmark module.
 2. Wrap each implementation in `bench.NamedRunner` (a `bench.Runner` is a
    context pointer plus `fn (*anyopaque, Allocator, std.Io) anyerror!u64`).
-3. Replace the per-file timing loop with `bench.run` for single workloads or
-   `bench.compareMany` for matrices.
+3. Replace per-file executables with `bench.runSuite` over a registry, or use
+   `bench.run` for a single workload and `bench.compareMany` for matrices.
 4. Gate with `gateRobust` (noisy hosts) or `gateSignificant` (clean hosts).
 5. Record samples in `baseline.Store` and gate on `compare`/`baseline.report`.
 6. Fill `Entry.environment_fingerprint` with `provenance.fingerprint`, using

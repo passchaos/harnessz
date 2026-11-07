@@ -27,6 +27,12 @@ pub const NamedRunner = multi.NamedRunner;
 pub const MultiComparison = multi.MultiComparison;
 pub const compareMany = multi.compareMany;
 
+/// In-process suites over a benchmark registry.
+pub const suite = @import("bench/suite.zig");
+pub const SuiteOptions = suite.SuiteOptions;
+pub const SuiteResult = suite.SuiteResult;
+pub const runSuite = suite.runSuite;
+
 /// Type-erased benchmark callback used by `runRuntime` and the child
 /// registry.
 pub const Runner = struct {
@@ -614,5 +620,6 @@ test {
     std.testing.refAllDecls(stderr_capture);
     std.testing.refAllDecls(watchdog);
     std.testing.refAllDecls(multi);
+    std.testing.refAllDecls(suite);
     std.testing.refAllDecls(measure_lib);
 }

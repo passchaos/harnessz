@@ -101,6 +101,10 @@ package. It also owns benchmark baseline storage and regression detection.
   counts, synthetic summaries and pairwise p-values, flipped pair lookups,
   gate errors, duplicate/empty names, deterministic text/JSON, and
   `toEntries` borrowing.
+- Suite tests must cover registry order, per-benchmark sample counts, callback
+  call counts and last results, `max_benchmarks` bounds, the empty registry,
+  invalid options, partial-result cleanup on callback failure, deterministic
+  text/JSON, and `toEntries` borrowing.
 - Golden directory tests must cover create/update/match, missing/extra/changed
   detection, update-mode pruning, deterministic report ordering, and bounds.
 - JSON oracle tests must cover reordered keys, array order, numeric tolerance,
@@ -141,6 +145,13 @@ package. It also owns benchmark baseline storage and regression detection.
   deterministic in registration order. `MultiComparison.fromSamples` supports
   synthetic tests, and `toEntries` borrows the owned names/samples as
   `baseline.Entry` values.
+- `bench.runSuite(alloc, io, registry, options)` runs a
+  `bench.registry.Registry` in registration order (bounded by
+  `max_benchmarks`) and returns a `SuiteResult` that owns names and `Stats`
+  until `deinit()`. A callback error aborts the suite and releases partial
+  results; an empty registry yields an empty result. `find(name)` returns a
+  benchmark's stats, and `toEntries` borrows names/samples for baseline
+  reporting.
 - `bench.pinToCpu`, `bench.currentCpu`, `bench.affinityMask`, and
   `bench.peakRssBytes` are Linux-only. Tests must skip on
   `error.Unsupported`, and pinning tests must restore the original mask.

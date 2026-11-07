@@ -61,6 +61,18 @@ pub const Registry = struct {
         return self.entries.items.len;
     }
 
+    /// Name at `index` in registration order, or null when out of range.
+    pub fn nameAt(self: *const Registry, index: usize) ?[]const u8 {
+        if (index >= self.name_storage.items.len) return null;
+        return self.name_storage.items[index];
+    }
+
+    /// Entry at `index` in registration order, or null when out of range.
+    pub fn entryAt(self: *const Registry, index: usize) ?Entry {
+        if (index >= self.entries.items.len) return null;
+        return self.entries.items[index];
+    }
+
     /// Copy up to `limit` names into a caller-owned outer slice, in
     /// registration order. The returned name slices reference registry-owned
     /// memory and remain valid until `deinit`. Release the outer slice with

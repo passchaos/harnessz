@@ -415,6 +415,35 @@ and JSON reports are deterministic and follow registration order.
 `MultiComparison.fromSamples` builds the same structure from synthetic samples
 for tests and offline analysis.
 
+### Benchmark suites
+
+When a repository has many named kernels, `runSuite` runs a
+`bench.registry.Registry` in registration order and returns per-benchmark
+samples plus deterministic text/JSON:
+
+```zig
+var registry = harnessz.bench.registry.Registry.init(gpa);
+defer registry.deinit();
+try registry.add("decode", .{ .context = &ctx, .run = decodeWork });
+try registry.add("encode", .{ .context = &ctx, .run = encodeWork });
+
+var suite = try harnessz.bench.runSuite(gpa, io, &registry, .{
+    .run = .{ .warmup_iterations = 2, .iterations = 20 },
+    .max_benchmarks = 0, // 0 = all
+});
+defer suite.deinit();
+
+try suite.writeText(writer);
+const entries = try suite.toEntries(gpa, fingerprint);
+defer gpa.free(entries);
+```
+
+`SuiteResult` owns names and `Stats` (including samples) until `deinit()`;
+`find(name)` returns a benchmark's stats, and a callback error aborts the
+suite and releases partial results. `max_benchmarks` bounds the run in
+registration order. Use `bench.process` when each benchmark must run in its
+own process.
+
 Measured runs and host controls:
 
 ```zig
