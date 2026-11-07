@@ -41,6 +41,11 @@ pub const Options = struct {
     /// discarded and `ProcessResult.stderr_truncated` is set. Zero retains
     /// nothing while still draining.
     max_stderr_bytes: usize = 64 * 1024,
+    /// Forward captured child stderr to the parent's stderr when
+    /// `runProcess` maps a benchmark failure to `error.BenchmarkFailed`.
+    /// Set false when the caller reports diagnostics itself (for example in
+    /// tests or structured logging).
+    forward_stderr: bool = true,
 };
 
 pub const Error = error{
@@ -105,7 +110,8 @@ pub fn runProcessResponse(
 }
 
 /// Strict variant: benchmark failures become `error.BenchmarkFailed` and the
-/// captured child stderr is forwarded to the parent's stderr as a diagnostic.
+/// captured child stderr is forwarded to the parent's stderr as a diagnostic
+/// unless `Options.forward_stderr` is false.
 pub fn runProcess(
     alloc: Allocator,
     io: std.Io,
@@ -115,7 +121,7 @@ pub fn runProcess(
     defer result.deinit(alloc);
     if (result.timed_out) return error.Timeout;
     if (result.response.error_name != null) {
-        emitCapturedStderr(io, result.stderr);
+        if (options.forward_stderr) emitCapturedStderr(io, result.stderr);
         return error.BenchmarkFailed;
     }
     if (result.response.samples_ns.len == 0) return error.InvalidResponse;
@@ -442,78 +448,6 @@ fn parseResponseMaybe(alloc: Allocator, bytes: []const u8) !?protocol.Response {
     return try protocol.cloneResponse(alloc, parsed.value);
 }
 
-test "process: invalid options are rejected" {
-    const alloc = std.testing.allocator;
-    try std.testing.expectError(error.InvalidOptions, runProcess(alloc, std.testing.io, .{
-        .argv = &.{},
-        .benchmark = "x",
-    }));
-    try std.testing.expectError(error.InvalidOptions, runProcess(alloc, std.testing.io, .{
-        .argv = &.{"child"},
-        .benchmark = "",
-    }));
-    try std.testing.expectError(error.InvalidOptions, runProcess(alloc, std.testing.io, .{
-        .argv = &.{"child"},
-        .benchmark = "x",
-        .iterations = 0,
-    }));
-    try std.testing.expectError(error.InvalidOptions, runProcess(alloc, std.testing.io, .{
-        .argv = &.{"child"},
-        .benchmark = "x",
-        .batch_size = 0,
-    }));
-    try std.testing.expectError(error.InvalidOptions, runProcess(alloc, std.testing.io, .{
-        .argv = &.{"child"},
-        .benchmark = "x",
-        .max_output_bytes = 0,
-    }));
-}
-
-test "process: spawn failure is typed" {
-    try std.testing.expectError(error.SpawnFailed, runProcess(
-        std.testing.allocator,
-        std.testing.io,
-        .{
-            .argv = &.{"/definitely/not/a/real/harnessz-child"},
-            .benchmark = "x",
-        },
-    ));
-}
-
-test "process: protocol helpers are independent of the child" {
-    const alloc = std.testing.allocator;
-    const samples = [_]u64{ 4, 5, 6 };
-    const encoded = try protocol.encodeResponse(alloc, .{
-        .samples_ns = @constCast(&samples),
-        .checksum = 7,
-    });
-    defer alloc.free(encoded);
-
-    var decoded = try protocol.decodeResponse(alloc, encoded);
-    defer decoded.deinit();
-    try std.testing.expectEqualSlices(u64, &samples, decoded.value.samples_ns);
-    try std.testing.expectEqual(@as(?u64, 7), decoded.value.checksum);
-}
-
-test "process: result deinit releases response and stderr" {
-    const alloc = std.testing.allocator;
-    const stderr_bytes = try alloc.dupe(u8, "diagnostic");
-    var result: ProcessResult = .{
-        .stderr = stderr_bytes,
-        .stderr_truncated = true,
-        .timed_out = true,
-        .exit_code = null,
-    };
-    result.deinit(alloc);
-
-    var transferred: ProcessResult = .{
-        .response = .{
-            .samples_ns = try alloc.dupe(u64, &.{ 1, 2 }),
-            .error_name = try alloc.dupe(u8, "E"),
-        },
-    };
-    var response = transferred.takeResponse();
-    transferred.deinit(alloc);
-    try std.testing.expectEqual(@as(usize, 2), response.samples_ns.len);
-    protocol.freeResponse(alloc, &response);
+test {
+    _ = @import("process_test.zig");
 }

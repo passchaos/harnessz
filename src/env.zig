@@ -1,3 +1,9 @@
+//! Environment lookup shared by golden, snapshot, and fixture resolution.
+//!
+//! An explicitly supplied environment always wins. Tests fall back to the
+//! runner-provided environment; non-test callers that omit an environment get
+//! "no environment" so environment-driven behaviour stays opt-in.
+
 const std = @import("std");
 const builtin = @import("builtin");
 

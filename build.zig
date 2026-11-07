@@ -50,6 +50,25 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_integration_tests.step);
 
+    // Formatting gates. Paths are explicit so the steps do not descend into
+    // generated caches under examples/consumer.
+    const fmt_paths = &.{
+        "build.zig",
+        "src",
+        "test",
+        "bench",
+        "tools",
+        "examples/consumer/build.zig",
+        "examples/consumer/main.zig",
+    };
+    const fmt_check = b.addFmt(.{ .check = true, .paths = fmt_paths });
+    const fmt_check_step = b.step("fmt-check", "Check Zig source formatting");
+    fmt_check_step.dependOn(&fmt_check.step);
+
+    const fmt = b.addFmt(.{ .paths = fmt_paths });
+    const fmt_step = b.step("fmt", "Format Zig sources in place");
+    fmt_step.dependOn(&fmt.step);
+
     // Adoption evidence tool. Not part of `test`: it reports host-dependent
     // wall-clock numbers and writes an optional JSON artifact.
     const adoption_bench = b.addExecutable(.{
@@ -99,4 +118,11 @@ pub fn build(b: *std.Build) void {
         });
         cross_step.dependOn(&cross_child.step);
     }
+
+    // Full local gate: formatting, unit/integration tests, and the
+    // compile-only cross-target check.
+    const check_step = b.step("check", "Run formatting, test, and cross-compile gates");
+    check_step.dependOn(test_step);
+    check_step.dependOn(&fmt_check.step);
+    check_step.dependOn(cross_step);
 }

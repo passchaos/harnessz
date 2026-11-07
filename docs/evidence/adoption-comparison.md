@@ -140,7 +140,7 @@ has no significance model to be robust or non-robust.
    helpers.
 
 The recipe is exercised end-to-end by the package integration test
-`integration: downstream adoption workflow` in `test/integration.zig`: it runs
+`integration: downstream adoption workflow` in `test/workflow.zig`: it runs
 a registry through `runSuite`, saves and reloads a baseline, compares with
 fingerprint enforcement, renders a report, checks a golden file, validates an
 evidence manifest, and hashes the workspace tree.
@@ -184,18 +184,20 @@ and reporting, so migration does not move domain code out of its repository.
 
 Recorded on 2026-11-08:
 
-- `zig build test`: 269/269 tests passed (Debug).
+- `zig build test`: 277/277 tests passed (Debug).
 - `zig build test -Doptimize=ReleaseSafe`: passed.
 - `zig build test -Doptimize=ReleaseFast`: passed.
 - `zig build check-cross`: Windows x86_64-gnu, macOS aarch64, and Linux
   x86_64-gnu child executables compile.
+- `zig build check`: formatting, tests, and cross-compile gates passed.
 - `cd examples/consumer && zig build run`: prints `consumer smoke ok`.
 - `zig build adoption-bench -- --trials 100 --samples 15 --iterations 20
   --json docs/evidence/adoption-bench.json`: produced the results above.
 
 The package integration suite also contains `integration: downstream adoption
 workflow`, which composes the suite, baseline, provenance, golden, and evidence
-APIs in one temporary workspace.
+APIs in one temporary workspace. The step-by-step downstream guide lives in
+[`../migration.md`](../migration.md).
 
 ## Caveats
 

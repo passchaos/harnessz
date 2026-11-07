@@ -10,6 +10,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const stats = @import("../stats.zig");
 const paths = @import("../paths.zig");
+const num = @import("../num.zig");
 
 pub const Entry = struct {
     name: []const u8,
@@ -223,7 +224,7 @@ pub const Store = struct {
             .name = entry.name,
             .baseline_median = baseline_median,
             .current_median = current_median,
-            .speedup = safeDiv(baseline_median, current_median),
+            .speedup = num.safeDiv(baseline_median, current_median),
             .regressed = current_median >
                 baseline_median * options.max_regression_ratio,
         };
@@ -240,14 +241,6 @@ fn copyEntry(allocator: Allocator, entry: Entry) !Entry {
         .samples_ns = try allocator.dupe(u64, entry.samples_ns),
         .summary = entry.summary,
     };
-}
-
-fn safeDiv(numerator: f64, denominator: f64) f64 {
-    if (denominator == 0) {
-        if (numerator == 0) return 0;
-        return if (numerator > 0) std.math.inf(f64) else -std.math.inf(f64);
-    }
-    return numerator / denominator;
 }
 
 /// Build a stable environment tag from the target architecture, operating

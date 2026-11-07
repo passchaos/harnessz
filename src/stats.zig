@@ -1,6 +1,7 @@
 //! Summary statistics and robust comparisons for benchmark samples.
 
 const std = @import("std");
+const num = @import("num.zig");
 const streaming = @import("stats/streaming.zig");
 const welch = @import("stats/welch.zig");
 const rank = @import("stats/rank.zig");
@@ -130,12 +131,12 @@ pub const RobustComparison = struct {
 
     /// Ratio of `b` to `a` (for example, candidate/baseline latency).
     pub fn ratio(self: RobustComparison) f64 {
-        return safeDiv(self.b.median, self.a.median);
+        return num.safeDiv(self.b.median, self.a.median);
     }
 
     /// `a / b`, so values greater than 1 mean `b` is faster than `a`.
     pub fn speedup(self: RobustComparison) f64 {
-        return safeDiv(self.a.median, self.b.median);
+        return num.safeDiv(self.a.median, self.b.median);
     }
 
     pub fn isImprovement(self: RobustComparison, min_ratio: f64) bool {
@@ -188,14 +189,6 @@ fn toF64(comptime T: type, value: T) f64 {
 
 fn assertNonEmpty(values: anytype) void {
     std.debug.assert(values.len > 0);
-}
-
-fn safeDiv(numerator: f64, denominator: f64) f64 {
-    if (denominator == 0) {
-        if (numerator == 0) return 0;
-        return if (numerator > 0) std.math.inf(f64) else -std.math.inf(f64);
-    }
-    return numerator / denominator;
 }
 
 test "median odd and even" {

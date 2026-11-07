@@ -14,12 +14,18 @@ package. It also owns benchmark baseline storage and regression detection.
 - Public API lives in `src/root.zig`; modules are re-exported from there.
 - Keep modules focused. Split by stable responsibility before a file grows past
   roughly 500 lines. Submodules live under `src/stats/`, `src/oracle/`,
-  `src/golden/`, `src/bench/`, and `src/determinism/` and are re-exported from
-  their parent module. Large test suites may live in a sibling `*_test.zig`
-  file imported from a small `test` block in the implementation file.
+  `src/golden/`, `src/bench/`, `src/determinism/`, and `src/provenance/` and are
+  re-exported from their parent module. Large test suites may live in a sibling
+  `*_test.zig` file imported from a small `test` block in the implementation
+  file.
 - Tests live beside implementation. Package-level integration tests live in
-  `test/`. When tests live in a re-exported submodule, add a small
-  `refAllDecls` test in the parent so the package test run includes them.
+  `test/` and are grouped by subsystem (`test/core.zig`, `test/process.zig`,
+  `test/workflow.zig`) with shared helpers in `test/support.zig`;
+  `test/integration.zig` only wires the groups into the test binary. When tests
+  live in a re-exported submodule, add a small `refAllDecls` test in the parent
+  so the package test run includes them.
+- User-facing documentation lives in `docs/`; keep the README as a concise
+  entry point and put subsystem details in the matching guide.
 - Use `std.Io.Dir` / `std.Io.File` with an explicit `io: std.Io`; do not add
   `std.fs` file APIs. `std.fs.path` is acceptable for pure path manipulation.
 
@@ -30,6 +36,8 @@ package. It also owns benchmark baseline storage and regression detection.
   - `zig build test -Doptimize=ReleaseSafe`
   - `zig build test -Doptimize=ReleaseFast`
   - `zig build check-cross` after platform-conditional or packaging changes
+  - `zig build check` for the combined formatting, test, and cross gate
+  - `zig build fmt-check` after editing source or test files
 - Run threaded tests repeatedly (at least 10 iterations) to check
   determinism.
 - Never assert absolute timings, speedups, or scheduler behaviour in unit
@@ -266,7 +274,8 @@ package. It also owns benchmark baseline storage and regression detection.
   `peak_allocated_bytes` are optional additive child metrics. Required fields
   remain `samples_ns`, `error_name`, and `error_message`.
 - `bench.process.runProcess` maps a valid response with `error_name` to
-  `error.BenchmarkFailed` and forwards captured stderr to the parent's stderr.
+  `error.BenchmarkFailed` and forwards captured stderr to the parent's stderr
+  unless `Options.forward_stderr` is false.
   `runProcessResponse` returns the response so callers can inspect the child's
   error name/message. `runProcessCapture` returns a `ProcessResult` with
   `response`, `stderr`, `stderr_truncated`, `timed_out`, and `exit_code`; call
@@ -324,4 +333,6 @@ package. It also owns benchmark baseline storage and regression detection.
 - No external dependencies.
 - Integration-test child executable: `bench/child_main.zig`, installed as
   `harnessz-bench-child`. `build.zig` passes its emitted path to
-  `test/integration.zig` through the `bench_child` options module.
+  `test/process.zig` through the `bench_child` options module.
+- `tools/adoption_bench.zig` is packaged and runs through
+  `zig build adoption-bench`; it is not part of `zig build test`.

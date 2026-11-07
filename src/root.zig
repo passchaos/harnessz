@@ -1,5 +1,19 @@
 //! harnessz: shared golden, snapshot, oracle, determinism, benchmark,
 //! baseline, and evidence infrastructure for Project-Z.
+//!
+//! Public modules are re-exported here. Callers import `harnessz` and use
+//! `harnessz.bench`, `harnessz.golden`, and so on; they never import a
+//! submodule directly.
+//!
+//! The package is organized in layers:
+//!
+//! - foundation: `paths`, `env`, `json_canon`, `diff`
+//! - assertions: `golden`, `snapshot`, `oracle`
+//! - measurement: `stats`, `determinism`, `bench`
+//! - evidence: `baseline`, `provenance`, `artifact`, `evidence`, `fixture`
+//!
+//! See `docs/architecture.md` for ownership conventions, error policies, and
+//! the module map.
 
 pub const golden = @import("golden.zig");
 pub const snapshot = @import("snapshot.zig");
