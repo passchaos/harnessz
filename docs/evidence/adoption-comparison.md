@@ -69,15 +69,18 @@ Results from the recorded run (100 trials per scenario):
 
 The same command was repeated several times on this host. Observed ranges:
 
-- False regressions on unchanged code: internal 8-16%, harnessz 0-1%.
-- Detection of a 10% regression: internal 95-100%, harnessz 97-98%.
+- False regressions on unchanged code: internal 8-16%, harnessz 0-2%.
+- Detection of a 10% regression: internal 97-100%, harnessz 97-99%.
 - Detection of a 20% regression: both 100%.
-- Ordering error under drift: internal 13.5-25.1%, harnessz 3.5-8.0%.
+- Ordering error under drift: internal 13.5-25.1%, harnessz 1.8-8.0%.
 
 Per-call overhead measured with an empty callback was 9.7 ns for the internal
-loop and 22 ns for harnessz sampling (the extra work is one clock read per
-sample plus bookkeeping). With a ~640 ns workload the medians were 640 ns and
-652 ns, a difference under 2%. Sampling cost therefore does not distort real
+loop and 22 ns for harnessz sampling in the recorded run (the extra work is
+one clock read per sample plus bookkeeping). Empty-callback timings are noisy
+because they measure the clock itself; repeated runs ranged from 16-22 ns for
+harnessz and 9.7-17.4 ns for the internal loop. The meaningful comparison is
+the ~640 ns workload, where the medians were 640 ns and 652 ns, a difference
+under 2%. Sampling cost therefore does not distort real
 benchmarks; it buys the distribution and significance data the internal style
 lacks.
 
