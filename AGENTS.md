@@ -116,6 +116,8 @@ package. It also owns benchmark baseline storage and regression detection.
 - `bench.pinToCpu`, `bench.currentCpu`, `bench.affinityMask`, and
   `bench.peakRssBytes` are Linux-only. Tests must skip on
   `error.Unsupported`, and pinning tests must restore the original mask.
+  Pinning and affinity queries affect the calling thread, not every thread in
+  the process.
 - `determinism.run` callbacks receive a thread count and own any actual
   threading. `determinism.runThreaded` spawns OS threads itself with worker
   signature `fn (context, thread_index: usize, *std.Io.Writer) anyerror!void`;
@@ -164,6 +166,8 @@ package. It also owns benchmark baseline storage and regression detection.
   error name/message. `runProcessCapture` returns a `ProcessResult` with
   `response`, `stderr`, `stderr_truncated`, `timed_out`, and `exit_code`; call
   `deinit(alloc)`, and use `takeResponse()` to transfer the response.
+  Capture-thread allocations are serialized with the main task, so `alloc`
+  does not need to be thread-safe.
 - Timeout zero disables the watchdog; otherwise a dedicated `std.Thread`
   watchdog starts after the request is written. It terminates the child's
   whole POSIX process group (`kill(-pid, SIGKILL)`) and the parent reaps the

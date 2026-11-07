@@ -17,6 +17,7 @@ const Allocator = std.mem.Allocator;
 const protocol = @import("protocol.zig");
 const stderr_capture = @import("stderr_capture.zig");
 const watchdog_mod = @import("watchdog.zig");
+const LockedAllocator = @import("../locked_allocator.zig").LockedAllocator;
 
 pub const Options = struct {
     /// Full argv for the child, including the executable path at index zero.
@@ -123,6 +124,10 @@ pub fn runProcess(
 /// Timeouts and benchmark failures are reported through the result
 /// (`timed_out`, `response.error_name`) instead of typed errors, except for
 /// spawn/protocol/IO failures.
+///
+/// `alloc` is used by both the stderr capture task and the main task, but
+/// allocations are serialized internally, so a non-thread-safe allocator is
+/// safe to pass.
 pub fn runProcessCapture(
     alloc: Allocator,
     io: std.Io,
@@ -136,13 +141,19 @@ pub fn runProcessCapture(
         return error.InvalidOptions;
     }
 
-    const request_json = try protocol.encodeRequest(alloc, .{
+    // The stderr capture task and the stdout reader run concurrently. Route
+    // their allocations through a lock so callers may pass an ordinary
+    // single-threaded allocator (for example an ArenaAllocator).
+    var locked_allocator: LockedAllocator = .{ .child = alloc, .io = io };
+    const locked = locked_allocator.allocator();
+
+    const request_json = try protocol.encodeRequest(locked, .{
         .benchmark = options.benchmark,
         .warmup_iterations = options.warmup_iterations,
         .iterations = options.iterations,
         .min_time_ns = options.min_time_ns,
     });
-    defer alloc.free(request_json);
+    defer locked.free(request_json);
 
     var child = std.process.spawn(io, .{
         .argv = options.argv,
@@ -170,7 +181,7 @@ pub fn runProcessCapture(
     const stderr_file = child.stderr orelse return error.SpawnFailed;
     child.stderr = null;
     var capture = stderr_capture.Capture.init(
-        alloc,
+        locked,
         io,
         stderr_file,
         options.max_stderr_bytes,
@@ -229,13 +240,13 @@ pub fn runProcessCapture(
     }
 
     var output: std.ArrayList(u8) = .empty;
-    defer output.deinit(alloc);
+    defer output.deinit(locked);
 
     const stdout_file = child.stdout orelse return error.SpawnFailed;
     var read_buffer: [4096]u8 = undefined;
     var reader = stdout_file.readerStreaming(io, &read_buffer);
     reader.interface.appendRemaining(
-        alloc,
+        locked,
         &output,
         .limited(options.max_output_bytes),
     ) catch |err| switch (err) {
@@ -268,31 +279,31 @@ pub fn runProcessCapture(
             else => null,
         },
     };
-    errdefer result.deinit(alloc);
+    errdefer result.deinit(locked);
 
     if (timed_out) return result;
 
     if (result.exit_code) |exit_code| {
         if (exit_code == 0) {
-            var parsed = protocol.decodeResponse(alloc, output.items) catch |err| switch (err) {
+            var parsed = protocol.decodeResponse(locked, output.items) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.InvalidJson => return error.InvalidJson,
             };
             defer parsed.deinit();
-            result.response = try protocol.cloneResponse(alloc, parsed.value);
+            result.response = try protocol.cloneResponse(locked, parsed.value);
             return result;
         }
 
         // A well-formed error response is the expected way for the child to
         // report benchmark failures. Without one, the child crashed or exited
         // outside the protocol.
-        if (try parseResponseMaybe(alloc, output.items)) |maybe| {
+        if (try parseResponseMaybe(locked, output.items)) |maybe| {
             var response = maybe;
             if (response.error_name != null) {
                 result.response = response;
                 return result;
             }
-            protocol.freeResponse(alloc, &response);
+            protocol.freeResponse(locked, &response);
         }
         return error.ChildExitFailure;
     }

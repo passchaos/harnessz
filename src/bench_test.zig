@@ -192,6 +192,24 @@ test "bench comparison: JSON and CSV output" {
     try std.testing.expect(std.mem.find(u8, csv, "median_ns") != null);
 }
 
+test "bench comparison: non-finite speedup is null in JSON" {
+    const alloc = std.testing.allocator;
+    const comparison = bench.Comparison.fromSamples(
+        &[_]u64{ 100, 100, 100 },
+        &[_]u64{ 0, 0, 0 },
+    );
+    try std.testing.expect(std.math.isInf(comparison.speedup()));
+
+    const json = try comparison.toJson(alloc);
+    defer alloc.free(json);
+    try std.testing.expect(std.mem.find(u8, json, "\"speedup\": null") != null);
+
+    // The rendered document must remain parseable JSON.
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.object.get("speedup").? == .null);
+}
+
 test "bench stats: JSON and CSV output" {
     const alloc = std.testing.allocator;
     var context: RunContext = .{};

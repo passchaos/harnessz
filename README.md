@@ -317,7 +317,10 @@ defer gpa.free(json);
 `comparison.speedup()` is `a.median / b.median`; values above 1 mean `b` is
 faster. A/B rounds are interleaved and alternate order. Callbacks return `u64`
 so the harness can keep the result observable with `blackBox`, which wraps the
-Zig 0.16 `std.mem.doNotOptimizeAway` primitive.
+Zig 0.16 `std.mem.doNotOptimizeAway` primitive. When `min_time_ns` is non-zero,
+sampling collects at least `iterations` samples and continues until the time
+budget is met, capped at `max(iterations, max_iterations)` samples. A zero
+candidate median produces an infinite speedup, which JSON renders as `null`.
 
 Gate logic is testable without timing:
 
@@ -345,7 +348,7 @@ var measured = try harnessz.bench.runMeasured(gpa, io, .{ .iterations = 20 }, &c
 defer measured.deinit(gpa);
 // measured.timing, measured.peak_rss_bytes, measured.peak_allocated_bytes
 
-try harnessz.bench.pinToCpu(3);          // Linux; error.Unsupported elsewhere
+try harnessz.bench.pinToCpu(3);          // Linux; pins the calling thread
 const cpu = try harnessz.bench.currentCpu();
 const mask = try harnessz.bench.affinityMask();
 const rss = try harnessz.bench.peakRssBytes(io); // VmHWM from /proc/self/status
@@ -360,7 +363,9 @@ defer samples.deinit(counting.allocator());
 bookkeeping uses the supplied allocator; peak allocation tracking resets after
 warmup. The counting allocator is not thread-safe and counts requested bytes,
 not underlying allocator overhead. CPU pinning and RSS sampling are Linux-only
-and return `error.Unsupported` on other platforms.
+and return `error.Unsupported` on other platforms. `pinToCpu` pins only the
+calling thread; save `affinityMask()` and restore it when the benchmark
+finishes.
 
 For already type-erased callbacks, `runRuntime(alloc, io, options, context,
 func)` uses the same warmup and sampling loop. `Stats.last_result` records the
@@ -513,7 +518,9 @@ The parent writes the request, closes stdin, reads stdout up to
 `max_output_bytes` (default 16 MiB), and drains stderr concurrently. The
 stderr pipe is always drained to EOF, so a child that writes more than
 `max_stderr_bytes` (default 64 KiB) cannot deadlock; excess bytes are
-discarded and `stderr_truncated` is set.
+discarded and `stderr_truncated` is set. Allocations made by the stderr
+capture task are serialized with the main task, so the `alloc` passed to the
+runner does not need to be thread-safe.
 
 When `timeout_ns` is non-zero, a dedicated `std.Thread` watchdog starts after
 the request is written. If the deadline expires it sends `SIGKILL` to the
@@ -721,8 +728,9 @@ field. `std.process.Init` in Zig 0.16 exposes the environment at
   caution.
 - `bench.pinToCpu`, `bench.currentCpu`, `bench.affinityMask`, and
   `bench.peakRssBytes` are Linux-only and return `error.Unsupported`
-  elsewhere. `CountingAllocator` is single-threaded and counts requested
-  bytes, not allocator overhead.
+  elsewhere. Pinning and affinity queries affect the calling thread, not every
+  thread in the process. `CountingAllocator` is single-threaded and counts
+  requested bytes, not allocator overhead.
 - Process isolation is not OS-level sandboxing: the child shares the parent's
   user, environment, filesystem, and network. Timeout enforcement uses a
   dedicated `std.Thread` watchdog and falls back to `Io.concurrent`; only when

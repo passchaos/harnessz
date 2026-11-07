@@ -50,8 +50,10 @@ pub const Options = struct {
     warmup_iterations: usize = 1,
     iterations: usize = 10,
     /// When non-zero, keep sampling until this much wall time has elapsed,
-    /// up to `max_iterations`.
+    /// with an effective cap of `max(iterations, max_iterations)` samples.
     min_time_ns: u64 = 0,
+    /// Upper bound for min-time sampling when it is at least `iterations`.
+    /// At least `iterations` samples are always collected.
     max_iterations: usize = 1000,
     clock: std.Io.Clock = .awake,
 };
@@ -173,7 +175,9 @@ pub const Comparison = struct {
     pub fn writeJson(self: Comparison, writer: *std.Io.Writer) !void {
         const Wire = struct {
             rounds: usize,
-            speedup: f64,
+            /// `null` when the speedup is not finite (for example, a zero
+            /// candidate median). JSON has no representation for infinity.
+            speedup: ?f64,
             p_value: f64,
             significant: bool,
             a: stats.Summary,
@@ -181,12 +185,17 @@ pub const Comparison = struct {
         };
         try std.json.Stringify.value(Wire{
             .rounds = self.rounds,
-            .speedup = self.speedup(),
+            .speedup = finiteOptional(self.speedup()),
             .p_value = self.p_value,
             .significant = self.significant,
             .a = self.a,
             .b = self.b,
-        }, .{ .whitespace = .indent_2 }, writer);
+        }, .{
+            .whitespace = .indent_2,
+            // `speedup` is the only optional field, so emitting nulls keeps
+            // the key present and the document valid JSON.
+            .emit_null_optional_fields = true,
+        }, writer);
     }
 
     pub fn toJson(self: Comparison, alloc: Allocator) ![]u8 {
@@ -472,6 +481,11 @@ fn safeDiv(numerator: f64, denominator: f64) f64 {
         return if (numerator > 0) std.math.inf(f64) else -std.math.inf(f64);
     }
     return numerator / denominator;
+}
+
+/// JSON cannot represent infinity or NaN; map non-finite values to null.
+fn finiteOptional(value: f64) ?f64 {
+    return if (std.math.isFinite(value)) value else null;
 }
 
 test {

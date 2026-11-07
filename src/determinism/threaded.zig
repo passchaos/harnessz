@@ -4,6 +4,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Options = @import("options.zig").Options;
 const oracle = @import("../oracle.zig");
+const LockedAllocator = @import("../locked_allocator.zig").LockedAllocator;
 
 pub const ThreadedReport = struct {
     /// Requested thread-count cases, in execution order.
@@ -276,76 +277,6 @@ fn runThreadCase(
     }
     return case;
 }
-
-/// Allocator wrapper that serializes access to a potentially non-thread-safe
-/// child allocator.
-const LockedAllocator = struct {
-    child: Allocator,
-    io: std.Io,
-    mutex: std.Io.Mutex = .init,
-
-    fn allocator(self: *LockedAllocator) Allocator {
-        return .{
-            .ptr = self,
-            .vtable = &.{
-                .alloc = alloc,
-                .resize = resize,
-                .remap = remap,
-                .free = free,
-            },
-        };
-    }
-
-    fn alloc(
-        ctx: *anyopaque,
-        len: usize,
-        alignment: std.mem.Alignment,
-        ret_addr: usize,
-    ) ?[*]u8 {
-        const self: *LockedAllocator = @ptrCast(@alignCast(ctx));
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        return self.child.rawAlloc(len, alignment, ret_addr);
-    }
-
-    fn resize(
-        ctx: *anyopaque,
-        memory: []u8,
-        alignment: std.mem.Alignment,
-        new_len: usize,
-        ret_addr: usize,
-    ) bool {
-        const self: *LockedAllocator = @ptrCast(@alignCast(ctx));
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        return self.child.rawResize(memory, alignment, new_len, ret_addr);
-    }
-
-    fn remap(
-        ctx: *anyopaque,
-        memory: []u8,
-        alignment: std.mem.Alignment,
-        new_len: usize,
-        ret_addr: usize,
-    ) ?[*]u8 {
-        const self: *LockedAllocator = @ptrCast(@alignCast(ctx));
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        return self.child.rawRemap(memory, alignment, new_len, ret_addr);
-    }
-
-    fn free(
-        ctx: *anyopaque,
-        memory: []u8,
-        alignment: std.mem.Alignment,
-        ret_addr: usize,
-    ) void {
-        const self: *LockedAllocator = @ptrCast(@alignCast(ctx));
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        self.child.rawFree(memory, alignment, ret_addr);
-    }
-};
 
 const ThreadedContext = struct {
     calls: std.atomic.Value(usize) = .init(0),

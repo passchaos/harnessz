@@ -492,6 +492,50 @@ test "integration: process-isolated bench error propagation" {
     }));
 }
 
+test "integration: process runner typed failures for malformed responses" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Child exits nonzero without writing a protocol response.
+    try std.testing.expectError(error.ChildExitFailure, harnessz.bench.process.runProcess(
+        alloc,
+        io,
+        .{
+            .argv = &.{bench_child.child_exe},
+            .benchmark = "exit-failure",
+            .warmup_iterations = 0,
+            .iterations = 1,
+            .timeout_ns = 10 * std.time.ns_per_s,
+        },
+    ));
+
+    // Child exits zero but stdout is not a single valid JSON response.
+    try std.testing.expectError(error.InvalidJson, harnessz.bench.process.runProcess(
+        alloc,
+        io,
+        .{
+            .argv = &.{bench_child.child_exe},
+            .benchmark = "invalid-output",
+            .warmup_iterations = 0,
+            .iterations = 1,
+            .timeout_ns = 10 * std.time.ns_per_s,
+        },
+    ));
+
+    // Child exits zero with a valid response that contains no samples.
+    try std.testing.expectError(error.InvalidResponse, harnessz.bench.process.runProcess(
+        alloc,
+        io,
+        .{
+            .argv = &.{bench_child.child_exe},
+            .benchmark = "empty-response",
+            .warmup_iterations = 0,
+            .iterations = 1,
+            .timeout_ns = 10 * std.time.ns_per_s,
+        },
+    ));
+}
+
 test "integration: process-isolated bench timeout" {
     if (comptime builtin.os.tag == .wasi or builtin.os.tag == .freestanding or builtin.os.tag == .other) {
         return error.SkipZigTest;
@@ -546,7 +590,7 @@ test "integration: bench child list mode" {
 
     var parsed = try std.json.parseFromSlice([]const []const u8, alloc, output.items, .{});
     defer parsed.deinit();
-    try std.testing.expectEqual(@as(usize, 7), parsed.value.len);
+    try std.testing.expectEqual(@as(usize, 10), parsed.value.len);
     try std.testing.expectEqualStrings("checksum", parsed.value[0]);
     try std.testing.expectEqualStrings("slow", parsed.value[1]);
     try std.testing.expectEqualStrings("fail", parsed.value[2]);
@@ -554,6 +598,9 @@ test "integration: bench child list mode" {
     try std.testing.expectEqualStrings("stderr-fail", parsed.value[4]);
     try std.testing.expectEqualStrings("stderr-flood", parsed.value[5]);
     try std.testing.expectEqualStrings("tree", parsed.value[6]);
+    try std.testing.expectEqualStrings("invalid-output", parsed.value[7]);
+    try std.testing.expectEqualStrings("exit-failure", parsed.value[8]);
+    try std.testing.expectEqualStrings("empty-response", parsed.value[9]);
 }
 
 test "integration: process runner bounds child stdout" {

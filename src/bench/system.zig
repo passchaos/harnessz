@@ -27,7 +27,7 @@ pub const CpuMask = struct {
     }
 };
 
-/// Return the current process CPU-affinity mask.
+/// Return the calling thread's current CPU-affinity mask.
 ///
 /// Only Linux is supported; other platforms return `error.Unsupported`.
 pub fn affinityMask() !CpuMask {
@@ -45,7 +45,11 @@ pub fn affinityMask() !CpuMask {
     }
 }
 
-/// Pin the calling process (and therefore the calling thread) to `cpu`.
+/// Pin the calling thread to `cpu`.
+///
+/// On Linux, `sched_setaffinity(0, ...)` affects the calling thread only;
+/// other threads in the process keep their current masks. Save
+/// `affinityMask()` and restore it when the benchmark finishes.
 ///
 /// Only Linux is supported; other platforms return `error.Unsupported`.
 /// `cpu` must be a valid CPU index and must be permitted by the current

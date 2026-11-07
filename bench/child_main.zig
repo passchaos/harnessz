@@ -10,8 +10,13 @@
 //! - `stderr-fail`  writes a diagnostic to stderr and fails
 //! - `stderr-flood` writes far more stderr than the parent retains
 //! - `tree`         spawns a sleeping grandchild before blocking
+//! - `invalid-output` writes invalid JSON to stdout (parent protocol test)
+//! - `exit-failure`  exits nonzero without writing a response
+//! - `empty-response` writes a valid response with no samples and exits
 //!
-//! `childMain` keeps stdout protocol-only; all diagnostics go to stderr.
+//! `childMain` keeps stdout protocol-only; the malformed-response fixtures
+//! deliberately violate that rule so the parent's error mapping can be
+//! tested. All diagnostics go to stderr.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -86,6 +91,30 @@ fn stderrFloodWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io)
     return 7;
 }
 
+fn invalidOutputWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
+    _ = context;
+    _ = alloc;
+    // Deliberate protocol violation: the parent must report InvalidJson.
+    try std.Io.File.stdout().writeStreamingAll(io, "not json");
+    return 0;
+}
+
+fn exitFailureWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
+    _ = context;
+    _ = alloc;
+    _ = io;
+    // Exit without a response so the parent reports ChildExitFailure.
+    std.process.exit(7);
+}
+
+fn emptyResponseWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
+    _ = context;
+    _ = alloc;
+    // Deliberate early exit with a syntactically valid but empty response.
+    try std.Io.File.stdout().writeStreamingAll(io, "{\"samples_ns\":[]}");
+    std.process.exit(0);
+}
+
 fn treeWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
     if (comptime harnessz.bench.watchdog.posix_process_control and builtin.os.tag == .linux) {
         return treeWorkPosix(context, alloc, io);
@@ -158,6 +187,18 @@ fn stderrFloodEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) a
     return stderrFloodWork(@ptrCast(@alignCast(context)), alloc, io);
 }
 
+fn invalidOutputEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
+    return invalidOutputWork(@ptrCast(@alignCast(context)), alloc, io);
+}
+
+fn exitFailureEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
+    return exitFailureWork(@ptrCast(@alignCast(context)), alloc, io);
+}
+
+fn emptyResponseEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
+    return emptyResponseWork(@ptrCast(@alignCast(context)), alloc, io);
+}
+
 fn treeEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
     return treeWork(@ptrCast(@alignCast(context)), alloc, io);
 }
@@ -174,6 +215,9 @@ pub fn main(init: std.process.Init) !u8 {
     try registry.add("stderr-fail", .{ .context = &context, .run = stderrFailEntry });
     try registry.add("stderr-flood", .{ .context = &context, .run = stderrFloodEntry });
     try registry.add("tree", .{ .context = &context, .run = treeEntry });
+    try registry.add("invalid-output", .{ .context = &context, .run = invalidOutputEntry });
+    try registry.add("exit-failure", .{ .context = &context, .run = exitFailureEntry });
+    try registry.add("empty-response", .{ .context = &context, .run = emptyResponseEntry });
 
     return harnessz.bench.child.mainInit(init, &registry);
 }

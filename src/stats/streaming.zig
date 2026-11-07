@@ -103,6 +103,9 @@ pub const Histogram = struct {
             0
         else
             (max_value - min_value) / @as(f64, @floatFromInt(bucket_count));
+        // Finite endpoints can still produce an infinite width when the
+        // subtraction overflows. Reject that instead of emitting invalid JSON.
+        if (!std.math.isFinite(width)) return error.InvalidValue;
 
         for (values) |value| {
             const index = bucketIndex(min_value, width, bucket_count, value);
@@ -362,6 +365,11 @@ test "histogram: JSON and invalid inputs" {
     try std.testing.expectError(error.InvalidOptions, Histogram.build(alloc, &empty, 2));
     const non_finite = [_]f64{ 0, std.math.inf(f64) };
     try std.testing.expectError(error.InvalidValue, Histogram.build(alloc, &non_finite, 2));
+
+    // Finite endpoints whose difference overflows must not produce an
+    // infinite bucket width (and therefore invalid JSON).
+    const extreme = [_]f64{ -1.7e308, 1.7e308 };
+    try std.testing.expectError(error.InvalidValue, Histogram.build(alloc, &extreme, 2));
 }
 
 test "confidence interval: normal approximation" {

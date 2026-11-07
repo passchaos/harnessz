@@ -41,8 +41,10 @@ pub const Watchdog = struct {
     fired: std.atomic.Value(bool) = .init(false),
 
     /// Watchdog body. Safe to run on a `std.Thread` or through
-    /// `Io.concurrent`.
+    /// `Io.concurrent`. A zero timeout disables the watchdog and returns
+    /// immediately without firing.
     pub fn run(self: *Watchdog) void {
+        if (self.timeout_ns == 0) return;
         var remaining = self.timeout_ns;
         while (remaining > 0) {
             if (self.finished.load(.acquire)) return;
@@ -113,6 +115,21 @@ test "watchdog: finish prevents a long timeout from firing" {
         const thread = try std.Thread.spawn(.{}, Watchdog.run, .{&watchdog});
         watchdog.finish();
         thread.join();
+        try std.testing.expect(!watchdog.fired.load(.acquire));
+    } else {
+        return error.SkipZigTest;
+    }
+}
+
+test "watchdog: zero timeout is disabled" {
+    if (comptime posix_process_control) {
+        // Use an id that cannot correspond to a live process group so a
+        // regression cannot signal the test process itself.
+        var watchdog: Watchdog = .{
+            .child_id = std.math.maxInt(std.posix.pid_t),
+            .timeout_ns = 0,
+        };
+        watchdog.run();
         try std.testing.expect(!watchdog.fired.load(.acquire));
     } else {
         return error.SkipZigTest;

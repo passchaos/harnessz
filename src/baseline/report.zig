@@ -108,9 +108,34 @@ pub const Report = struct {
     }
 
     pub fn writeJson(self: Report, writer: *std.Io.Writer) !void {
+        // Non-finite speedups (for example, a zero current median) have no
+        // JSON representation. Emit them as absent rather than writing the
+        // invalid bare token `inf`.
+        const JsonRow = struct {
+            name: []const u8,
+            baseline_median_ns: ?f64 = null,
+            current_median_ns: ?f64 = null,
+            speedup: ?f64 = null,
+            p_value: ?f64 = null,
+            status: Status = .unchanged,
+        };
+
+        const json_rows = try self.allocator.alloc(JsonRow, self.rows.len);
+        defer self.allocator.free(json_rows);
+        for (self.rows, 0..) |row, index| {
+            json_rows[index] = .{
+                .name = row.name,
+                .baseline_median_ns = row.baseline_median_ns,
+                .current_median_ns = row.current_median_ns,
+                .speedup = finiteOptional(row.speedup),
+                .p_value = row.p_value,
+                .status = row.status,
+            };
+        }
+
         const Wire = struct {
             summary: Summary,
-            rows: []const Row,
+            rows: []const JsonRow,
 
             const Summary = struct {
                 regressions: usize,
@@ -126,7 +151,7 @@ pub const Report = struct {
                 .missing = self.missing,
                 .extra = self.extra,
             },
-            .rows = self.rows,
+            .rows = json_rows,
         }, .{
             .whitespace = .indent_2,
             .emit_null_optional_fields = false,
@@ -273,6 +298,11 @@ fn safeDiv(numerator: f64, denominator: f64) f64 {
     return numerator / denominator;
 }
 
+fn finiteOptional(value: ?f64) ?f64 {
+    const number = value orelse return null;
+    return if (std.math.isFinite(number)) number else null;
+}
+
 fn sampleEntry(name: []const u8, samples: []const u64) baseline.Entry {
     return .{
         .name = name,
@@ -400,6 +430,35 @@ test "report: text snapshot for an empty store" {
         \\summary: regressions=0 improvements=0 missing=0 extra=0
         \\
     , out.written());
+}
+
+test "report: non-finite speedup is omitted from JSON" {
+    const alloc = std.testing.allocator;
+    const baseline_samples = [_]u64{ 100, 100, 100 };
+    const current_samples = [_]u64{ 0, 0, 0 };
+    const store: baseline.Store = .{
+        .allocator = alloc,
+        .entries = &.{sampleEntry("render", &baseline_samples)},
+    };
+    const current = [_]baseline.Entry{
+        sampleEntry("render", &current_samples),
+    };
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    var result = try report(alloc, &out.writer, &store, &current, .{});
+    defer result.deinit();
+
+    try std.testing.expectEqual(Status.improved, result.rows[0].status);
+    try std.testing.expect(std.math.isInf(result.rows[0].speedup.?));
+
+    const json = try result.toJson(alloc);
+    defer alloc.free(json);
+    try std.testing.expect(std.mem.find(u8, json, "\"speedup\"") == null);
+
+    // The rendered document must remain parseable JSON.
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
 }
 
 test "report: JSON snapshot for an empty store" {

@@ -119,7 +119,7 @@ pub const Manifest = struct {
             Wire,
             arena.allocator(),
             bytes,
-            .{},
+            .{ .allocate = .alloc_always },
         );
         return .{
             .entries = wire.entries,
@@ -260,6 +260,25 @@ test "evidence: JSON round-trip" {
     try std.testing.expectEqualStrings("golden files and update mode", parsed.entries[0].notes);
     try std.testing.expectEqual(Status.partial, parsed.entries[1].status);
     try std.testing.expectEqual(@as(usize, 0), parsed.entries[1].evidence_paths.len);
+}
+
+test "evidence: fromJson owns strings independently of the input buffer" {
+    const alloc = std.testing.allocator;
+    const input = try alloc.dupe(
+        u8,
+        "{\"entries\":[{\"id\":\"alpha\",\"notes\":\"original note\",\"test_names\":[\"known test\"]}]}",
+    );
+    defer alloc.free(input);
+
+    var manifest = try Manifest.fromJson(alloc, input);
+    defer manifest.deinit();
+
+    // If any string aliases the input buffer, overwriting the input makes the
+    // manifest observe the new bytes and this assertion fails deterministically.
+    @memset(input, 'x');
+    try std.testing.expectEqualStrings("alpha", manifest.entries[0].id);
+    try std.testing.expectEqualStrings("original note", manifest.entries[0].notes);
+    try std.testing.expectEqualStrings("known test", manifest.entries[0].test_names[0]);
 }
 
 test "evidence: summary counts statuses and evidence" {
