@@ -68,4 +68,35 @@ pub fn build(b: *std.Build) void {
         "Compare harnessz sampling with downstream ad-hoc timing styles",
     );
     adoption_step.dependOn(&run_adoption_bench.step);
+
+    // Compile the public module and child executable for non-native targets.
+    // Runtime coverage is still Linux-first; this gate catches compile-time
+    // platform regressions.
+    const cross_targets = [_]std.Target.Query{
+        .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu },
+        .{ .cpu_arch = .aarch64, .os_tag = .macos },
+        .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
+    };
+    const cross_step = b.step("check-cross", "Compile for non-native targets");
+    for (cross_targets) |query| {
+        const resolved = b.resolveTargetQuery(query);
+        const cross_mod = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = resolved,
+            .optimize = optimize,
+        });
+        const cross_child = b.addExecutable(.{
+            .name = b.fmt("harnessz-bench-child-{s}-{s}", .{
+                @tagName(query.cpu_arch.?),
+                @tagName(query.os_tag.?),
+            }),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("bench/child_main.zig"),
+                .target = resolved,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "harnessz", .module = cross_mod }},
+            }),
+        });
+        cross_step.dependOn(&cross_child.step);
+    }
 }

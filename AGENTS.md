@@ -29,6 +29,7 @@ package. It also owns benchmark baseline storage and regression detection.
   - `zig build test`
   - `zig build test -Doptimize=ReleaseSafe`
   - `zig build test -Doptimize=ReleaseFast`
+  - `zig build check-cross` after platform-conditional or packaging changes
 - Run threaded tests repeatedly (at least 10 iterations) to check
   determinism.
 - Never assert absolute timings, speedups, or scheduler behaviour in unit

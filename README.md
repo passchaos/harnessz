@@ -33,6 +33,7 @@ Every public module is exported from `src/root.zig`.
 zig build test
 zig build test -Doptimize=ReleaseSafe
 zig build test -Doptimize=ReleaseFast
+zig build check-cross   # compile the child for Windows/macOS/Linux targets
 ```
 
 Tests live beside each implementation. Package-level integration tests live in
