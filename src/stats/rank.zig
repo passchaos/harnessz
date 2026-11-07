@@ -170,5 +170,5 @@ test "rank: outlier does not hide a real separation" {
     // Welch's variance is dominated by the outlier, so it fails to separate
     // the same samples. This is the robustness the rank test adds.
     const welch_result = try welch.welchTTest(u64, &a, &b);
-    try std.testing.expect(welch_result.p_approx > 0.05);
+    try std.testing.expect(welch_result.p_value > 0.05);
 }

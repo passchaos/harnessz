@@ -166,15 +166,15 @@ pub const Comparison = struct {
     /// significance flag is set.
     pub fn fromSamples(a_samples: []const u64, b_samples: []const u64) Comparison {
         const welch_result = stats.welchTTest(u64, a_samples, b_samples) catch
-            stats.WelchResult{ .t = 0, .degrees_of_freedom = 0, .p_approx = 1 };
+            stats.WelchResult{ .t = 0, .degrees_of_freedom = 0, .p_value = 1 };
         const rank_result = stats.mannWhitneyU(u64, a_samples, b_samples) catch
             stats.RankResult{ .u = 0, .z = 0, .p_approx = 1, .tie_groups = 0 };
         return .{
             .a = stats.summarize(u64, a_samples),
             .b = stats.summarize(u64, b_samples),
             .rounds = @min(a_samples.len, b_samples.len),
-            .p_value = welch_result.p_approx,
-            .significant = welch_result.p_approx <= significance_alpha,
+            .p_value = welch_result.p_value,
+            .significant = welch_result.p_value <= significance_alpha,
             .robust_p_value = rank_result.p_approx,
             .robust_significant = rank_result.p_approx <= significance_alpha,
         };

@@ -312,7 +312,7 @@ fn welchPValue(
         baseline_entry.samples_ns,
         current_entry.samples_ns,
     ) catch return null;
-    return welch.p_approx;
+    return welch.p_value;
 }
 
 fn formatOptional(buffer: []u8, value: ?f64, comptime format: []const u8) []const u8 {

@@ -114,7 +114,7 @@ has no significance model to be robust or non-robust.
 | Memory metrics | Per-file custom tracking allocators | `bench.runMeasured` and `runSuite(.measure_memory = true)` with peak bytes, peak RSS, allocation/free counts |
 | Named suites | One executable per kernel | `bench.runSuite` over a registry, deterministic text/JSON |
 | Distribution | Elapsed total or per-iteration average | min, max, mean, stddev, median, p90, p99, count |
-| Significance | None; fixed ratio gate | Welch t-test and Mann-Whitney U, both with configurable gates |
+| Significance | None; fixed ratio gate | Welch t-test with an exact Student-t tail and Mann-Whitney U, both with configurable gates |
 | Ordering bias | Sequential implementations | Rotating interleaved A/B and N-way comparison |
 | Regression tracking | Ad-hoc thresholds or shell scripts | JSON `baseline.Store`, environment fingerprints, deterministic text/JSON reports |
 | Isolation | Same process; a hang stops the run | Child process, process-group timeout, bounded stderr, protocol-only stdout |

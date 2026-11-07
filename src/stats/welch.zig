@@ -1,11 +1,10 @@
-//! Welch's unequal-variance t-test with a normal-approximation p-value.
+//! Welch's unequal-variance t-test with an exact Student-t tail probability.
 //!
 //! The test statistic and degrees of freedom follow Welch's original
-//! formulation. The p-value uses the standard normal distribution instead of
-//! Student's t distribution; this is accurate for large samples and becomes
-//! progressively optimistic for small samples and heavy tails. Benchmark
-//! samples are usually large enough for this approximation, and documenting it
-//! keeps the dependency surface std-only.
+//! formulation. The two-sided p-value is computed from the Student-t
+//! distribution via the regularized incomplete beta function, so small samples
+//! are not treated as if they were normal. `twoSidedNormalPValue` remains
+//! available for callers that explicitly want the normal approximation.
 
 const std = @import("std");
 
@@ -14,8 +13,8 @@ pub const WelchResult = struct {
     t: f64,
     /// Welch-Satterthwaite degrees of freedom.
     degrees_of_freedom: f64,
-    /// Two-sided p-value from the standard normal approximation.
-    p_approx: f64,
+    /// Two-sided Student-t tail probability.
+    p_value: f64,
 };
 
 /// Two-sided Welch t-test for the difference in means.
@@ -48,13 +47,13 @@ pub fn welchTTest(
             return .{
                 .t = 0,
                 .degrees_of_freedom = degrees_of_freedom,
-                .p_approx = 1,
+                .p_value = 1,
             };
         }
         return .{
             .t = if (mean_a > mean_b) std.math.inf(f64) else -std.math.inf(f64),
             .degrees_of_freedom = degrees_of_freedom,
-            .p_approx = 0,
+            .p_value = 0,
         };
     }
 
@@ -69,8 +68,83 @@ pub fn welchTTest(
     return .{
         .t = t,
         .degrees_of_freedom = degrees_of_freedom,
-        .p_approx = twoSidedNormalPValue(t),
+        .p_value = studentTTwoSidedPValue(t, degrees_of_freedom),
     };
+}
+
+/// Two-sided Student-t tail probability `P(|T| >= |t|)`.
+///
+/// Uses the identity `P = I_{df/(df+t^2)}(df/2, 1/2)` with the regularized
+/// incomplete beta function. Invalid degrees of freedom and NaN inputs yield
+/// 1; infinite `t` yields 0.
+pub fn studentTTwoSidedPValue(t: f64, degrees_of_freedom: f64) f64 {
+    if (std.math.isNan(t) or std.math.isNan(degrees_of_freedom)) return 1;
+    if (!(degrees_of_freedom > 0) or !std.math.isFinite(degrees_of_freedom)) {
+        return 1;
+    }
+    if (!std.math.isFinite(t)) return 0;
+    if (t == 0) return 1;
+
+    const df = degrees_of_freedom;
+    const x = df / (df + t * t);
+    return std.math.clamp(regularizedIncompleteBeta(x, df / 2.0, 0.5), 0, 1);
+}
+
+/// Regularized incomplete beta function `I_x(a, b)`.
+fn regularizedIncompleteBeta(x: f64, a: f64, b: f64) f64 {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+
+    const log_front = std.math.lgamma(f64, a + b) -
+        std.math.lgamma(f64, a) -
+        std.math.lgamma(f64, b) +
+        a * @log(x) +
+        b * @log(1.0 - x);
+    const front = @exp(log_front);
+
+    if (x < (a + 1.0) / (a + b + 2.0)) {
+        return front * betaContinuedFraction(x, a, b) / a;
+    }
+    return 1.0 - front * betaContinuedFraction(1.0 - x, b, a) / b;
+}
+
+/// Continued fraction for the incomplete beta function (modified Lentz).
+fn betaContinuedFraction(x: f64, a: f64, b: f64) f64 {
+    const max_iterations = 300;
+    const epsilon = 3e-14;
+    const tiny = 1e-300;
+
+    var c: f64 = 1;
+    var d: f64 = 1 - (a + b) * x / (a + 1);
+    if (@abs(d) < tiny) d = tiny;
+    d = 1 / d;
+    var h = d;
+
+    var m: usize = 1;
+    while (m <= max_iterations) : (m += 1) {
+        const m_f: f64 = @floatFromInt(m);
+        const m2: f64 = 2.0 * m_f;
+
+        var aa = m_f * (b - m_f) * x / ((a + m2 - 1) * (a + m2));
+        d = 1 + aa * d;
+        if (@abs(d) < tiny) d = tiny;
+        c = 1 + aa / c;
+        if (@abs(c) < tiny) c = tiny;
+        d = 1 / d;
+        h *= d * c;
+
+        aa = -(a + m_f) * (a + b + m_f) * x / ((a + m2) * (a + m2 + 1));
+        d = 1 + aa * d;
+        if (@abs(d) < tiny) d = tiny;
+        c = 1 + aa / c;
+        if (@abs(c) < tiny) c = tiny;
+        d = 1 / d;
+        const delta = d * c;
+        h *= delta;
+
+        if (@abs(delta - 1) < epsilon) break;
+    }
+    return h;
 }
 
 /// Two-sided p-value `P(|Z| >= |t|)` for a standard normal `Z`.
@@ -131,8 +205,50 @@ test "welch: known statistic and degrees of freedom" {
     const expected_t = -3.0 / @sqrt(2.0 / 3.0);
     try std.testing.expectApproxEqAbs(expected_t, result.t, 1e-12);
     try std.testing.expectApproxEqAbs(@as(f64, 4), result.degrees_of_freedom, 1e-12);
-    try std.testing.expect(result.p_approx > 0);
-    try std.testing.expect(result.p_approx < 0.01);
+    // Exact two-sided Student-t tail (the normal approximation would report
+    // roughly 0.00024 for the same statistic).
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 0.021311641128756727),
+        result.p_value,
+        1e-9,
+    );
+}
+
+test "welch: Student-t tail matches reference values" {
+    const Case = struct { t: f64, df: f64, p: f64 };
+    const cases = [_]Case{
+        .{ .t = 2.0, .df = 10, .p = 0.07338803477074039 },
+        .{ .t = 2.228138852, .df = 10, .p = 0.05 },
+        .{ .t = 1.0, .df = 1, .p = 0.5 },
+        .{ .t = 2.0, .df = 1, .p = 0.2951672353008664 },
+        .{ .t = 3.0, .df = 2, .p = 0.09546596626670911 },
+    };
+    for (cases) |case| {
+        try std.testing.expectApproxEqAbs(
+            case.p,
+            studentTTwoSidedPValue(case.t, case.df),
+            1e-10,
+        );
+        try std.testing.expectApproxEqAbs(
+            case.p,
+            studentTTwoSidedPValue(-case.t, case.df),
+            1e-10,
+        );
+    }
+
+    try std.testing.expectEqual(@as(f64, 1), studentTTwoSidedPValue(0, 10));
+    try std.testing.expectEqual(
+        @as(f64, 0),
+        studentTTwoSidedPValue(std.math.inf(f64), 10),
+    );
+    try std.testing.expectEqual(
+        @as(f64, 1),
+        studentTTwoSidedPValue(1, 0),
+    );
+    try std.testing.expectEqual(
+        @as(f64, 1),
+        studentTTwoSidedPValue(std.math.nan(f64), 10),
+    );
 }
 
 test "welch: symmetric p-value" {
@@ -140,7 +256,7 @@ test "welch: symmetric p-value" {
     const b = [_]u64{ 20, 22, 21, 19, 23 };
     const forward = try welchTTest(u64, &a, &b);
     const reverse = try welchTTest(u64, &b, &a);
-    try std.testing.expectApproxEqAbs(forward.p_approx, reverse.p_approx, 1e-15);
+    try std.testing.expectApproxEqAbs(forward.p_value, reverse.p_value, 1e-15);
     try std.testing.expectApproxEqAbs(forward.t, -reverse.t, 1e-12);
     try std.testing.expectApproxEqAbs(
         forward.degrees_of_freedom,
@@ -153,7 +269,7 @@ test "welch: identical distributions are not significant" {
     const values = [_]u64{ 100, 101, 99, 100, 102 };
     const result = try welchTTest(u64, &values, &values);
     try std.testing.expectEqual(@as(f64, 0), result.t);
-    try std.testing.expectEqual(@as(f64, 1), result.p_approx);
+    try std.testing.expectEqual(@as(f64, 1), result.p_value);
     try std.testing.expectEqual(@as(f64, 8), result.degrees_of_freedom);
 }
 
@@ -163,7 +279,7 @@ test "welch: zero variance with different means" {
     const result = try welchTTest(u64, &a, &b);
     try std.testing.expect(result.t > 0);
     try std.testing.expect(std.math.isInf(result.t));
-    try std.testing.expectEqual(@as(f64, 0), result.p_approx);
+    try std.testing.expectEqual(@as(f64, 0), result.p_value);
 }
 
 test "welch: requires at least two samples" {

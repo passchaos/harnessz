@@ -51,8 +51,9 @@ package. It also owns benchmark baseline storage and regression detection.
   comparisons.
 - Streaming stats tests must cover Welford mean/variance, histogram bucket
   boundaries, confidence-interval margins, and trimmed means.
-- Welch tests must cover a known statistic/degrees-of-freedom pair, symmetry,
-  identical distributions, zero variance, and the two-sample minimum.
+- Welch tests must cover a known statistic/degrees-of-freedom pair with its
+  exact Student-t p-value, symmetry, identical distributions, zero variance,
+  the two-sample minimum, and invalid degrees of freedom/NaN/infinite inputs.
 - Mann-Whitney tests must cover complete separation, symmetry, identical
   distributions, ties, the two-sample minimum, and an outlier case where Welch
   is not significant but the rank test is.
@@ -138,8 +139,9 @@ package. It also owns benchmark baseline storage and regression detection.
   `std.process.Init.minimal.environ` via `Options.environ`.
 - `bench` callbacks return `u64` and are kept observable with
   `bench.blackBox`, which wraps `std.mem.doNotOptimizeAway`.
-- `bench.Comparison.fromSamples` always computes a Welch p-value and a
-  tie-corrected Mann-Whitney U p-value; fewer than two samples per side yields
+- `bench.Comparison.fromSamples` always computes a Welch p-value (exact
+  Student-t tail) and a tie-corrected Mann-Whitney U p-value (normal
+  approximation); fewer than two samples per side yields
   `p_value = robust_p_value = 1` and both significance flags false instead of
   an error. `gateSignificant` combines the ratio gate, Welch significance, and
   the caller's `max_p_value`; `gateRobust` is the outlier-tolerant counterpart

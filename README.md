@@ -14,7 +14,7 @@ Zig 0.16.0 and uses `std.Io` with an explicit `io` value.
 | `snapshot` | Named in-memory or file-backed snapshots with `check`, `checkFmt`, and update mode |
 | `oracle` | Byte/integer/float/complex comparisons, structural JSON comparison, tolerances, ULP distance, NaN/inf/signed-zero handling, Wyhash checksums |
 | `determinism` | Repeated-run byte stability, first divergence, thread-count matrix, real threaded runs with spawn fallback |
-| `stats` | Batch summaries plus streaming Welford accumulation, linear histograms, confidence intervals, trimmed means, Welch's t-test, and a tie-corrected Mann-Whitney U rank-sum test |
+| `stats` | Batch summaries plus streaming Welford accumulation, linear histograms, confidence intervals, trimmed means, Welch's t-test with an exact Student-t tail, and a tie-corrected Mann-Whitney U rank-sum test |
 | `bench` | Warmup/timed runs, min-time sampling, interleaved A/B and multi-implementation comparison, significance and robust gates, CPU pinning, peak RSS, counting allocator, JSON/CSV, `blackBox`, plus process-isolated child/parent runners with process-group timeouts and bounded stderr capture |
 | `baseline` | JSON baseline storage, environment fingerprints, optional fingerprint enforcement, median regression detection, entry updates, and deterministic text/JSON comparison reports |
 | `fixture` | `HARNESSZ_FIXTURES` / `testdata/` resolution and workspace helpers |
@@ -304,14 +304,13 @@ Welch's unequal-variance t-test:
 
 ```zig
 const result = try harnessz.stats.welchTTest(u64, baseline_samples, candidate_samples);
-// result.t, result.degrees_of_freedom, result.p_approx
+// result.t, result.degrees_of_freedom, result.p_value
 ```
 
-Both inputs need at least two samples. The p-value is two-sided and uses a
-standard normal approximation (`erfc(|t| / sqrt(2))`) rather than Student's t
-distribution. This is documented and intentionally conservative for small
-samples; the test statistic and degrees of freedom use the exact Welch
-formulas.
+Both inputs need at least two samples. The p-value is two-sided and uses the
+exact Student-t tail via the regularized incomplete beta function with
+Welch-Satterthwaite degrees of freedom. `stats.twoSidedNormalPValue` remains
+available for callers that explicitly want the normal approximation.
 
 ## Benchmarks
 
@@ -970,9 +969,9 @@ field. `std.process.Init` in Zig 0.16 exposes the environment at
   assertions in tests.
 - `baseline` fingerprint enforcement is opt-in via `require_fingerprint`; the
   default keeps the historical record-only behaviour.
-- `stats.welchTTest` uses a normal approximation for the p-value rather than
-  an exact Student-t tail. Treat very small samples or heavy-tailed data with
-  caution.
+- `stats.welchTTest` uses the exact Student-t tail; the Mann-Whitney U p-value
+  still uses a tie-corrected normal approximation. Heavy-tailed data remains a
+  reason to prefer the rank-sum gate.
 - `bench.pinToCpu`, `bench.currentCpu`, `bench.affinityMask`, and
   `bench.peakRssBytes` are Linux-only and return `error.Unsupported`
   elsewhere. Pinning and affinity queries affect the calling thread, not every
