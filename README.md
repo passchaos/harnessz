@@ -393,13 +393,16 @@ The parent writes one JSON `Request` to the child's stdin and closes it:
 The child writes exactly one JSON `Response` to stdout:
 
 ```json
-{"samples_ns":[123,456],"checksum":98765}
+{"samples_ns":[123,456],"checksum":98765,"peak_rss_bytes":12345678,"peak_allocated_bytes":4096}
 {"samples_ns":[],"error_name":"SyntheticBenchFailure","error_message":"benchmark execution failed"}
 ```
 
 `checksum` is an optional additive extension carrying the benchmark callback's
-last returned `u64` (useful for deterministic checksums). Null optional fields
-are omitted from the wire form. The child must not print anything else to
+last returned `u64` (useful for deterministic checksums). `peak_rss_bytes` and
+`peak_allocated_bytes` are optional additive metrics from the child's measured
+runner; `peak_rss_bytes` is null when the platform cannot report it. Null
+optional fields are omitted from the wire form, and older children simply omit
+the new fields. The child must not print anything else to
 stdout; diagnostics go to stderr. Stderr is **not** part of the wire protocol:
 the parent captures it out-of-band and returns it through
 `process.ProcessResult`.
@@ -488,7 +491,8 @@ defer harnessz.bench.protocol.freeResponse(gpa, &response);
 
 `runProcess` returns `error.BenchmarkFailed` when the child produced a valid
 response with `error_name` set, and forwards the captured stderr to the
-parent's stderr as a diagnostic. `runProcessResponse` returns that response
+parent's stderr as a diagnostic. Successful responses also carry optional
+`peak_rss_bytes` and `peak_allocated_bytes` values measured in the child. `runProcessResponse` returns that response
 instead, so callers can inspect `error_name`/`error_message`. Other typed
 errors are `error.SpawnFailed`, `error.ChildExitFailure`, `error.Timeout`,
 `error.TimeoutUnavailable`, `error.OutputTooLarge`, `error.CaptureUnavailable`,

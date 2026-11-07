@@ -78,7 +78,7 @@ pub fn execute(
 
     const entry = reg.find(name) orelse return error.UnknownBenchmark;
 
-    var stats = bench.runRuntime(alloc, io, .{
+    var measured = bench.runMeasuredRuntime(alloc, io, .{
         .warmup_iterations = request.warmup_iterations,
         .iterations = request.iterations,
         .batch_size = request.batch_size,
@@ -86,11 +86,13 @@ pub fn execute(
     }, entry.context, entry.run) catch |err| {
         return ownedErrorResponse(alloc, @errorName(err), "benchmark execution failed");
     };
-    defer stats.deinit(alloc);
+    defer measured.deinit(alloc);
 
     return .{
-        .samples_ns = try alloc.dupe(u64, stats.samples_ns),
-        .checksum = stats.last_result,
+        .samples_ns = try alloc.dupe(u64, measured.timing.samples_ns),
+        .checksum = measured.timing.last_result,
+        .peak_rss_bytes = measured.peak_rss_bytes,
+        .peak_allocated_bytes = measured.peak_allocated_bytes,
     };
 }
 
@@ -383,6 +385,7 @@ test "child: execute returns samples, checksum, and callback errors" {
     defer protocol.freeResponse(alloc, &response);
     try std.testing.expectEqual(@as(usize, 3), response.samples_ns.len);
     try std.testing.expectEqual(@as(?u64, 0x1234_5678), response.checksum);
+    try std.testing.expectEqual(@as(?u64, 0), response.peak_allocated_bytes);
     try std.testing.expect(response.error_name == null);
     try std.testing.expectEqual(@as(usize, 4), ok_context.calls);
 

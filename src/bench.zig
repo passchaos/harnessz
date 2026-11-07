@@ -338,6 +338,38 @@ pub fn runMeasured(
     };
 }
 
+/// Type-erased counterpart to `runMeasured`, used by process-isolated child
+/// benchmarks that report memory metrics alongside timing samples.
+pub fn runMeasuredRuntime(
+    alloc: Allocator,
+    io: std.Io,
+    options: Options,
+    context: *anyopaque,
+    func: *const fn (*anyopaque, Allocator, std.Io) anyerror!u64,
+) !MeasuredStats {
+    var counting = system.CountingAllocator.init(alloc);
+    const timing = try runInternal(
+        alloc,
+        counting.allocator(),
+        io,
+        options,
+        .{ .context = context, .run = func },
+        &counting,
+    );
+    errdefer {
+        var owned = timing;
+        owned.deinit(alloc);
+    }
+
+    // A missing or unreadable procfs entry simply leaves the field null.
+    const rss: ?u64 = system.peakRssBytes(io) catch null;
+    return .{
+        .timing = timing,
+        .peak_rss_bytes = rss,
+        .peak_allocated_bytes = counting.peakBytes(),
+    };
+}
+
 fn runInternal(
     alloc: Allocator,
     callback_alloc: Allocator,

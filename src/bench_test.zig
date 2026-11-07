@@ -341,6 +341,31 @@ test "bench runMeasured: reports allocated bytes and timing structure" {
     }
 }
 
+fn erasedMeasuredAllocWork(
+    context: *anyopaque,
+    alloc: Allocator,
+    io: std.Io,
+) anyerror!u64 {
+    const typed: *AllocMeasureContext = @ptrCast(@alignCast(context));
+    return measuredAllocWork(typed, alloc, io);
+}
+
+test "bench runMeasuredRuntime: erased callback reports allocations" {
+    const alloc = std.testing.allocator;
+    var context: AllocMeasureContext = .{ .bytes = 4096 };
+    var measured = try bench.runMeasuredRuntime(alloc, std.testing.io, .{
+        .warmup_iterations = 1,
+        .iterations = 3,
+    }, &context, erasedMeasuredAllocWork);
+    defer measured.deinit(alloc);
+
+    try std.testing.expectEqual(@as(usize, 3), measured.timing.samples_ns.len);
+    try std.testing.expectEqual(@as(u64, 4096), measured.peak_allocated_bytes);
+    if (measured.peak_rss_bytes) |rss| {
+        try std.testing.expect(rss > 0);
+    }
+}
+
 test "bench runMeasured: zero iterations is invalid" {
     const alloc = std.testing.allocator;
     var context: AllocMeasureContext = .{ .bytes = 8 };

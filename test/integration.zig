@@ -497,6 +497,28 @@ test "integration: process-isolated bench batch size calls callback per batch" {
     try std.testing.expectEqual(@as(?u64, 6), response.checksum);
 }
 
+test "integration: process-isolated bench reports memory metrics" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    var response = try harnessz.bench.process.runProcess(alloc, io, .{
+        .argv = &.{bench_child.child_exe},
+        .benchmark = "alloc",
+        .warmup_iterations = 0,
+        .iterations = 1,
+        .timeout_ns = 10 * std.time.ns_per_s,
+    });
+    defer harnessz.bench.protocol.freeResponse(alloc, &response);
+
+    try std.testing.expectEqual(@as(usize, 1), response.samples_ns.len);
+    try std.testing.expectEqual(@as(?u64, 4096), response.checksum);
+    try std.testing.expectEqual(@as(?u64, 4096), response.peak_allocated_bytes);
+    if (comptime builtin.os.tag == .linux) {
+        try std.testing.expect(response.peak_rss_bytes != null);
+        try std.testing.expect(response.peak_rss_bytes.? > 0);
+    }
+}
+
 test "integration: process-isolated bench error propagation" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
@@ -628,18 +650,19 @@ test "integration: bench child list mode" {
 
     var parsed = try std.json.parseFromSlice([]const []const u8, alloc, output.items, .{});
     defer parsed.deinit();
-    try std.testing.expectEqual(@as(usize, 11), parsed.value.len);
+    try std.testing.expectEqual(@as(usize, 12), parsed.value.len);
     try std.testing.expectEqualStrings("checksum", parsed.value[0]);
     try std.testing.expectEqualStrings("call-count", parsed.value[1]);
-    try std.testing.expectEqualStrings("slow", parsed.value[2]);
-    try std.testing.expectEqualStrings("fail", parsed.value[3]);
-    try std.testing.expectEqualStrings("stderr-ok", parsed.value[4]);
-    try std.testing.expectEqualStrings("stderr-fail", parsed.value[5]);
-    try std.testing.expectEqualStrings("stderr-flood", parsed.value[6]);
-    try std.testing.expectEqualStrings("tree", parsed.value[7]);
-    try std.testing.expectEqualStrings("invalid-output", parsed.value[8]);
-    try std.testing.expectEqualStrings("exit-failure", parsed.value[9]);
-    try std.testing.expectEqualStrings("empty-response", parsed.value[10]);
+    try std.testing.expectEqualStrings("alloc", parsed.value[2]);
+    try std.testing.expectEqualStrings("slow", parsed.value[3]);
+    try std.testing.expectEqualStrings("fail", parsed.value[4]);
+    try std.testing.expectEqualStrings("stderr-ok", parsed.value[5]);
+    try std.testing.expectEqualStrings("stderr-fail", parsed.value[6]);
+    try std.testing.expectEqualStrings("stderr-flood", parsed.value[7]);
+    try std.testing.expectEqualStrings("tree", parsed.value[8]);
+    try std.testing.expectEqualStrings("invalid-output", parsed.value[9]);
+    try std.testing.expectEqualStrings("exit-failure", parsed.value[10]);
+    try std.testing.expectEqualStrings("empty-response", parsed.value[11]);
 }
 
 test "integration: process runner bounds child stdout" {

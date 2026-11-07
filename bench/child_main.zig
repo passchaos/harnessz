@@ -5,6 +5,7 @@
 //!
 //! - `checksum`     deterministic work used for protocol assertions
 //! - `call-count`   returns a monotonic call counter (batch-size assertions)
+//! - `alloc`        allocates a fixed buffer (memory-metric assertions)
 //! - `slow`         sleeps long enough for the parent timeout to win
 //! - `fail`         returns a benchmark error
 //! - `stderr-ok`    writes a diagnostic to stderr and succeeds
@@ -55,6 +56,15 @@ fn callCountWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !
     _ = io;
     context.calls += 1;
     return context.calls;
+}
+
+fn allocWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
+    _ = context;
+    _ = io;
+    const buffer = try alloc.alloc(u8, 4096);
+    defer alloc.free(buffer);
+    @memset(buffer, 0xab);
+    return buffer.len;
 }
 
 fn slowWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
@@ -182,6 +192,10 @@ fn callCountEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) any
     return callCountWork(@ptrCast(@alignCast(context)), alloc, io);
 }
 
+fn allocEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
+    return allocWork(@ptrCast(@alignCast(context)), alloc, io);
+}
+
 fn slowEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
     return slowWork(@ptrCast(@alignCast(context)), alloc, io);
 }
@@ -225,6 +239,7 @@ pub fn main(init: std.process.Init) !u8 {
     var context: BenchContext = .{};
     try registry.add("checksum", .{ .context = &context, .run = checksumEntry });
     try registry.add("call-count", .{ .context = &context, .run = callCountEntry });
+    try registry.add("alloc", .{ .context = &context, .run = allocEntry });
     try registry.add("slow", .{ .context = &context, .run = slowEntry });
     try registry.add("fail", .{ .context = &context, .run = failingEntry });
     try registry.add("stderr-ok", .{ .context = &context, .run = stderrOkEntry });

@@ -113,6 +113,8 @@ package. It also owns benchmark baseline storage and regression detection.
   significance flag, and the caller's `max_p_value`.
 - `bench.runMeasured` passes a `CountingAllocator` to the callback and reports
   peak RSS (nullable on unsupported platforms) plus peak allocated bytes.
+  `bench.runMeasuredRuntime` is the type-erased counterpart used by the
+  process-isolated child.
 - `bench.Options.batch_size` (default 1) invokes the callback that many times
   per timed sample and stores the per-call average; `Stats.batch_size` records
   it. `protocol.Request.batch_size` defaults to 1 when omitted by older
@@ -162,8 +164,9 @@ package. It also owns benchmark baseline storage and regression detection.
 - Child stdout is protocol-only (one JSON `Response`, or one JSON name array in
   list mode); diagnostics must go to stderr.
 - `protocol.Response.checksum` is an optional additive extension carrying the
-  callback's last returned `u64`. Required fields remain `samples_ns`,
-  `error_name`, and `error_message`.
+  callback's last returned `u64`. `peak_rss_bytes` and
+  `peak_allocated_bytes` are optional additive child metrics. Required fields
+  remain `samples_ns`, `error_name`, and `error_message`.
 - `bench.process.runProcess` maps a valid response with `error_name` to
   `error.BenchmarkFailed` and forwards captured stderr to the parent's stderr.
   `runProcessResponse` returns the response so callers can inspect the child's

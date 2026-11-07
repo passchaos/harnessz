@@ -30,6 +30,12 @@ pub const Response = struct {
     /// `u64` (typically a checksum). `null` when no measured call completed.
     /// The required protocol fields above remain unchanged.
     checksum: ?u64 = null,
+    /// Additive extension: child process peak RSS in bytes, when the child
+    /// platform supports it.
+    peak_rss_bytes: ?u64 = null,
+    /// Additive extension: peak bytes allocated through the callback
+    /// allocator during the measured phase.
+    peak_allocated_bytes: ?u64 = null,
 };
 
 /// Options shared by both wire directions. Null optional fields are omitted so
@@ -136,6 +142,8 @@ pub fn cloneResponse(alloc: Allocator, response: Response) Allocator.Error!Respo
         .error_name = error_name,
         .error_message = error_message,
         .checksum = response.checksum,
+        .peak_rss_bytes = response.peak_rss_bytes,
+        .peak_allocated_bytes = response.peak_allocated_bytes,
     };
 }
 
@@ -194,12 +202,16 @@ test "protocol: response round-trip with samples and checksum" {
     const original: Response = .{
         .samples_ns = @constCast(&samples),
         .checksum = 0xdead_beef,
+        .peak_rss_bytes = 12 * 1024 * 1024,
+        .peak_allocated_bytes = 4096,
     };
 
     const encoded = try encodeResponse(alloc, original);
     defer alloc.free(encoded);
     try std.testing.expect(std.mem.find(u8, encoded, "\"samples_ns\":[11,22,33]") != null);
     try std.testing.expect(std.mem.find(u8, encoded, "\"checksum\":3735928559") != null);
+    try std.testing.expect(std.mem.find(u8, encoded, "\"peak_rss_bytes\":12582912") != null);
+    try std.testing.expect(std.mem.find(u8, encoded, "\"peak_allocated_bytes\":4096") != null);
     // Null optional fields are omitted from the wire form.
     try std.testing.expect(std.mem.find(u8, encoded, "error_name") == null);
 
@@ -207,6 +219,8 @@ test "protocol: response round-trip with samples and checksum" {
     defer decoded.deinit();
     try std.testing.expectEqualSlices(u64, &samples, decoded.value.samples_ns);
     try std.testing.expectEqual(@as(?u64, 0xdead_beef), decoded.value.checksum);
+    try std.testing.expectEqual(@as(?u64, 12 * 1024 * 1024), decoded.value.peak_rss_bytes);
+    try std.testing.expectEqual(@as(?u64, 4096), decoded.value.peak_allocated_bytes);
     try std.testing.expect(decoded.value.error_name == null);
     try std.testing.expect(decoded.value.error_message == null);
 }
@@ -228,6 +242,8 @@ test "protocol: error response round-trip" {
     try std.testing.expectEqualStrings("SyntheticBenchFailure", decoded.value.error_name.?);
     try std.testing.expectEqualStrings("benchmark failed on purpose", decoded.value.error_message.?);
     try std.testing.expect(decoded.value.checksum == null);
+    try std.testing.expect(decoded.value.peak_rss_bytes == null);
+    try std.testing.expect(decoded.value.peak_allocated_bytes == null);
 }
 
 test "protocol: invalid JSON is reported as InvalidJson" {
@@ -245,6 +261,8 @@ test "protocol: cloneResponse owns copies" {
         .error_name = "E",
         .error_message = "message",
         .checksum = 42,
+        .peak_rss_bytes = 1024,
+        .peak_allocated_bytes = 64,
     };
 
     var cloned = try cloneResponse(alloc, original);
@@ -253,6 +271,8 @@ test "protocol: cloneResponse owns copies" {
     try std.testing.expectEqualStrings("E", cloned.error_name.?);
     try std.testing.expectEqualStrings("message", cloned.error_message.?);
     try std.testing.expectEqual(@as(?u64, 42), cloned.checksum);
+    try std.testing.expectEqual(@as(?u64, 1024), cloned.peak_rss_bytes);
+    try std.testing.expectEqual(@as(?u64, 64), cloned.peak_allocated_bytes);
 }
 
 test "protocol: stderr is not part of the wire form" {
