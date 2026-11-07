@@ -11,6 +11,7 @@ pub const baseline = @import("baseline.zig");
 pub const fixture = @import("fixture.zig");
 pub const evidence = @import("evidence.zig");
 pub const provenance = @import("provenance.zig");
+pub const artifact = @import("artifact.zig");
 
 pub const diff = @import("diff.zig");
 pub const env = @import("env.zig");

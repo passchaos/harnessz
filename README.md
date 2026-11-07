@@ -20,6 +20,7 @@ Zig 0.16.0 and uses `std.Io` with an explicit `io` value.
 | `fixture` | `HARNESSZ_FIXTURES` / `testdata/` resolution and workspace helpers |
 | `evidence` | Evidence manifests with JSON round-trip, missing-path validation, and test-name validation |
 | `provenance` | SHA-256 of bytes, files, and source trees plus a stable environment fingerprint for baseline entries |
+| `artifact` | Strict JSON artifact manifests with SHA-256 verification, missing/mismatch/extra reporting, and save/load |
 | `json_canon` | Canonical JSON emission with recursively sorted object keys |
 | `diff` | Line-oriented unified diff used by golden/snapshot diagnostics |
 | `paths` | Shared relative-path validation and existence checks |
@@ -860,6 +861,37 @@ Use the result as `baseline.Entry.environment_fingerprint` together with
 `Options.require_fingerprint = true` and `expected_fingerprint`, so a baseline
 recorded on a different machine, build mode, or source revision fails loudly
 with `error.EnvironmentMismatch` instead of producing a false regression.
+
+## Artifact manifests
+
+`artifact.Manifest` records relative paths and SHA-256 digests for build
+artifacts and verifies them against a directory tree.
+
+```zig
+const entries = [_]harnessz.artifact.Entry{
+    .{ .path = "zig-out/bin/render", .sha256 = binary_hash },
+    .{ .path = "bench/corpus.json", .sha256 = corpus_hash },
+};
+const manifest = harnessz.artifact.Manifest.init(gpa, &entries);
+try manifest.save(io, repo_dir, "bench/artifacts.json");
+
+var loaded = try harnessz.artifact.Manifest.load(
+    gpa, io, repo_dir, "bench/artifacts.json",
+);
+defer loaded.deinit();
+
+var report = try loaded.verify(io, repo_dir, .{ .reject_extra = false });
+defer report.deinit();
+if (!report.ok()) {
+    // report.missing, report.mismatched, report.extra, report.present
+}
+```
+
+`fromJson` is strict: unknown or duplicate fields, invalid relative paths,
+invalid digests, and duplicate paths are rejected. `verify` reports missing
+files, digest mismatches (with expected and actual digests), and, with
+`reject_extra = true`, files under the tree that the manifest does not list.
+The manifest owns its parsed strings in an arena; call `deinit()`.
 
 ## Environment variables
 

@@ -243,6 +243,29 @@ pub fn hashTreeHex(
     return hexAlloc(alloc, try hashTree(alloc, io, dir, options));
 }
 
+/// Deterministically list regular files under `dir`, sorted by relative path.
+/// The same skip and bounds rules as `hashTree` apply. The caller owns the
+/// outer slice and every path; free each with `allocator.free`.
+pub fn listTree(
+    alloc: Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    options: TreeOptions,
+) ![][]u8 {
+    var root = try dir.openDir(io, ".", .{ .iterate = true });
+    defer root.close(io);
+
+    var paths: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (paths.items) |path| alloc.free(path);
+        paths.deinit(alloc);
+    }
+    var total_bytes: u64 = 0;
+    try collectTree(alloc, io, root, "", &paths, &total_bytes, options);
+    std.mem.sort([]u8, paths.items, {}, pathLessThan);
+    return paths.toOwnedSlice(alloc);
+}
+
 pub const FingerprintOptions = struct {
     build_mode: []const u8 = "",
     source_hash: []const u8 = "",
@@ -657,6 +680,28 @@ test "provenance: tree hash is deterministic and content-sensitive" {
     try tmp.dir.writeFile(io, .{ .sub_path = "nested/b.txt", .data = "gamma" });
     const changed = try hashTree(alloc, io, tmp.dir, .{});
     try std.testing.expect(!std.mem.eql(u8, &first, &changed));
+}
+
+test "provenance: listTree returns sorted relative paths" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "z.txt", .data = "z" });
+    try tmp.dir.createDirPath(io, "nested");
+    try tmp.dir.writeFile(io, .{ .sub_path = "nested/a.txt", .data = "a" });
+    try tmp.dir.createDirPath(io, ".git");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".git/ignored", .data = "x" });
+
+    const listed = try listTree(alloc, io, tmp.dir, .{});
+    defer {
+        for (listed) |path| alloc.free(path);
+        alloc.free(listed);
+    }
+    try std.testing.expectEqual(@as(usize, 2), listed.len);
+    try std.testing.expectEqualStrings("nested/a.txt", listed[0]);
+    try std.testing.expectEqualStrings("z.txt", listed[1]);
 }
 
 test "provenance: tree hash follows file symlinks only when requested" {

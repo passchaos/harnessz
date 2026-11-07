@@ -110,6 +110,9 @@ package. It also owns benchmark baseline storage and regression detection.
   test composing suite -> baseline save/load/compare/report -> provenance
   fingerprint and tree hash -> golden -> evidence validation in one temporary
   workspace.
+- Artifact tests must cover strict JSON round-trip (unknown/duplicate/missing
+  fields, invalid paths/digests, duplicate paths), verification of matching,
+  mismatched, missing, and extra files, save/load, and the empty manifest.
 - Golden directory tests must cover create/update/match, missing/extra/changed
   detection, update-mode pruning, deterministic report ordering, and bounds.
 - JSON oracle tests must cover reordered keys, array order, numeric tolerance,
@@ -199,6 +202,11 @@ package. It also owns benchmark baseline storage and regression detection.
   `provenance.fingerprint` is the richer alternative to
   `baseline.environmentFingerprint`; its format is opaque (equality only) and
   Linux CPU probes degrade to `unknown`.
+- `artifact.Manifest.fromJson` is strict JSON (unknown/duplicate/missing
+  fields, invalid paths or digests, and duplicate paths are rejected). It owns
+  its arena; call `deinit()`. `Manifest.init` borrows caller-owned entries.
+  `verify` returns a `VerifyReport` that owns its strings via an arena; call
+  `deinit()`, and use `ok()` plus `missing`/`mismatched`/`extra`/`present`.
 - `evidence.Manifest.fromJson` owns its arena; call `deinit()`.
   `validateTests` returns a `TestValidationReport` whose slices reference the
   manifest and whose list is released by `deinit()`.
