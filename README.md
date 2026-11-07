@@ -19,6 +19,7 @@ Zig 0.16.0 and uses `std.Io` with an explicit `io` value.
 | `baseline` | JSON baseline storage, environment fingerprints, optional fingerprint enforcement, median regression detection, entry updates, and deterministic text/JSON comparison reports |
 | `fixture` | `HARNESSZ_FIXTURES` / `testdata/` resolution and workspace helpers |
 | `evidence` | Evidence manifests with JSON round-trip, missing-path validation, and test-name validation |
+| `provenance` | SHA-256 of bytes, files, and source trees plus a stable environment fingerprint for baseline entries |
 | `json_canon` | Canonical JSON emission with recursively sorted object keys |
 | `diff` | Line-oriented unified diff used by golden/snapshot diagnostics |
 | `paths` | Shared relative-path validation and existence checks |
@@ -706,6 +707,55 @@ if (!test_report.valid()) {
 
 `TestValidationReport` references manifest-owned strings and counts every
 declared test name, including duplicates.
+
+## Provenance and environment fingerprints
+
+`provenance` hashes benchmark inputs and builds the environment tag stored in
+`baseline.Entry.environment_fingerprint`.
+
+```zig
+const source_hash = try harnessz.provenance.hashTreeHex(gpa, io, repo_dir, .{
+    .skip_dirs = &.{ ".git", ".zig-cache", "zig-out" }, // default
+    .max_files = 100_000,
+    .max_total_bytes = 4 * 1024 * 1024 * 1024,
+});
+defer gpa.free(source_hash);
+
+const binary_hash = try harnessz.provenance.hashFileHex(
+    gpa, io, repo_dir, "zig-out/bin/render",
+);
+defer gpa.free(binary_hash);
+
+const fingerprint = try harnessz.provenance.fingerprint(gpa, io, .{
+    .build_mode = "ReleaseSafe",
+    .source_hash = source_hash,
+    .binary_hash = binary_hash,
+    .commit = commit,
+    .dirty = true,
+    .extra = "machine-a",
+});
+defer gpa.free(fingerprint);
+```
+
+- `hashBytes`/`hashBytesHex` hash in-memory data with SHA-256.
+- `hashFile`/`hashFileHex` hash a single file relative to `dir`.
+- `hashTree`/`hashTreeHex` traverse a directory deterministically: paths are
+  sorted, VCS/cache/output directories are skipped by default, and each file
+  contributes its path and content digest. `dir` does not need to have been
+  opened with `.iterate = true`.
+- Symlinked files are skipped unless `TreeOptions.follow_symlinks` is true;
+  symlinked directories are never traversed.
+- `max_files` and `max_total_bytes` bound traversal and return
+  `error.ProvenanceTooLarge`.
+- `fingerprint` combines architecture, OS, CPU count, Linux CPU model and
+  scaling-governor probes, build mode, source/binary hashes, commit, dirty
+  state, and a caller tag. Unavailable probes degrade to `unknown` instead of
+  failing; the string format is opaque and only equality is supported.
+
+Use the result as `baseline.Entry.environment_fingerprint` together with
+`Options.require_fingerprint = true` and `expected_fingerprint`, so a baseline
+recorded on a different machine, build mode, or source revision fails loudly
+with `error.EnvironmentMismatch` instead of producing a false regression.
 
 ## Environment variables
 

@@ -90,6 +90,10 @@ package. It also owns benchmark baseline storage and regression detection.
   regression ratios, and duplicate current names.
 - Evidence tests must cover JSON round-trip, missing-path validation, known
   test names, and unknown test-name reporting with entry id and name.
+- Provenance tests must cover known SHA-256 vectors, file/byte hash agreement,
+  deterministic and content-sensitive tree hashes, skipped cache directories,
+  traversal bounds, symlink policy, and fingerprint stability plus caller
+  fields.
 - Golden directory tests must cover create/update/match, missing/extra/changed
   detection, update-mode pruning, deterministic report ordering, and bounds.
 - JSON oracle tests must cover reordered keys, array order, numeric tolerance,
@@ -150,6 +154,14 @@ package. It also owns benchmark baseline storage and regression detection.
   `regressed` above `baseline * max_regression_ratio` and `improved` below
   `baseline / max_regression_ratio`; p-values require at least two raw samples
   on both sides.
+- `provenance.hashTree`/`hashTreeHex` accept an ordinary `std.Io.Dir` (they
+  open their own iterable handle), sort paths, skip VCS/cache/output
+  directories by default, and return `error.ProvenanceTooLarge` past
+  `max_files`/`max_total_bytes`. Symlinked files are hashed only with
+  `follow_symlinks = true`; symlinked directories are never traversed.
+  `provenance.fingerprint` is the richer alternative to
+  `baseline.environmentFingerprint`; its format is opaque (equality only) and
+  Linux CPU probes degrade to `unknown`.
 - `evidence.Manifest.fromJson` owns its arena; call `deinit()`.
   `validateTests` returns a `TestValidationReport` whose slices reference the
   manifest and whose list is released by `deinit()`.
