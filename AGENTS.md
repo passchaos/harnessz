@@ -106,6 +106,10 @@ package. It also owns benchmark baseline storage and regression detection.
   call counts and last results, `max_benchmarks` bounds, the empty registry,
   invalid options, partial-result cleanup on callback failure, deterministic
   text/JSON, and `toEntries` borrowing.
+- The package integration suite must include a downstream adoption workflow
+  test composing suite -> baseline save/load/compare/report -> provenance
+  fingerprint and tree hash -> golden -> evidence validation in one temporary
+  workspace.
 - Golden directory tests must cover create/update/match, missing/extra/changed
   detection, update-mode pruning, deterministic report ordering, and bounds.
 - JSON oracle tests must cover reordered keys, array order, numeric tolerance,

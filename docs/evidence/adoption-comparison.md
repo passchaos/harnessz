@@ -133,6 +133,12 @@ has no significance model to be robust or non-robust.
 7. Keep golden and evidence checks in the same package instead of per-repo
    helpers.
 
+The recipe is exercised end-to-end by the package integration test
+`integration: downstream adoption workflow` in `test/integration.zig`: it runs
+a registry through `runSuite`, saves and reloads a baseline, compares with
+fingerprint enforcement, renders a report, checks a golden file, validates an
+evidence manifest, and hashes the workspace tree.
+
 ## Caveats
 
 - The measured workload is synthetic. It isolates harness methodology (sampling,
