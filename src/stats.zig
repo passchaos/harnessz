@@ -14,12 +14,18 @@ pub const Histogram = streaming.Histogram;
 /// Normal-approximation confidence interval for a sample mean.
 pub const ConfidenceInterval = streaming.ConfidenceInterval;
 pub const confidenceIntervalMean = streaming.confidenceIntervalMean;
+/// Student-t confidence interval using `n - 1` degrees of freedom.
+pub const confidenceIntervalMeanT = streaming.confidenceIntervalMeanT;
 /// Mean after symmetric trimming of the sorted samples.
 pub const trimmedMean = streaming.trimmedMean;
 
-/// Welch's unequal-variance t-test with a normal-approximation p-value.
+/// Welch's unequal-variance t-test with an exact Student-t p-value.
 pub const WelchResult = welch.WelchResult;
 pub const welchTTest = welch.welchTTest;
+/// Two-sided Student-t tail probability.
+pub const studentTTwoSidedPValue = welch.studentTTwoSidedPValue;
+/// Two-sided Student-t critical value for a confidence level.
+pub const studentTCritical = welch.studentTCritical;
 pub const twoSidedNormalPValue = welch.twoSidedNormalPValue;
 pub const normalCdf = welch.normalCdf;
 pub const erfc = welch.erfc;

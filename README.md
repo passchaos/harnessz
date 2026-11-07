@@ -290,16 +290,18 @@ const json = try histogram.toJson(gpa);
 defer gpa.free(json);
 
 const interval = harnessz.stats.confidenceIntervalMean(values, 1.96);
+const t_interval = try harnessz.stats.confidenceIntervalMeanT(values, 0.95);
 const robust_mean = harnessz.stats.trimmedMean(values, 0.1);
 ```
 
 `Histogram` uses linear buckets from min to max; the last bucket includes the
 maximum and all-equal values collapse to a zero-width first bucket.
-`confidenceIntervalMean` uses the normal approximation
-`mean +/- z * stddev / sqrt(n)` and assumes approximately i.i.d. samples; it is
-not an exact Student-t interval. `trimmedMean` discards
-`floor(len * trim_fraction)` values from each end, with `trim_fraction` in
-`[0, 0.5)`.
+`confidenceIntervalMean` uses the caller-supplied critical value in
+`mean +/- z * stddev / sqrt(n)`; pass a Student-t critical value (for example
+from `stats.studentTCritical`) when samples are few. `confidenceIntervalMeanT`
+does this automatically with `n - 1` degrees of freedom and requires at least
+two values. `trimmedMean` discards `floor(len * trim_fraction)` values from
+each end, with `trim_fraction` in `[0, 0.5)`.
 
 Welch's unequal-variance t-test:
 

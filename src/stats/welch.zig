@@ -90,6 +90,38 @@ pub fn studentTTwoSidedPValue(t: f64, degrees_of_freedom: f64) f64 {
     return std.math.clamp(regularizedIncompleteBeta(x, df / 2.0, 0.5), 0, 1);
 }
 
+/// Two-sided Student-t critical value for a confidence level.
+///
+/// Solves `studentTTwoSidedPValue(t, df) = 1 - confidence` by bisection.
+/// Returns `error.InvalidOptions` for non-positive/non-finite degrees of
+/// freedom or a confidence outside `(0, 1)`.
+pub fn studentTCritical(degrees_of_freedom: f64, confidence: f64) !f64 {
+    if (!(degrees_of_freedom > 0) or !std.math.isFinite(degrees_of_freedom)) {
+        return error.InvalidOptions;
+    }
+    if (!(confidence > 0) or !(confidence < 1)) return error.InvalidOptions;
+
+    const alpha = 1.0 - confidence;
+    var low: f64 = 0;
+    var high: f64 = 1;
+    while (studentTTwoSidedPValue(high, degrees_of_freedom) > alpha) {
+        high *= 2;
+        if (high > 1e15) return error.InvalidOptions;
+    }
+
+    var iteration: usize = 0;
+    while (iteration < 200) : (iteration += 1) {
+        const mid = (low + high) / 2;
+        if (studentTTwoSidedPValue(mid, degrees_of_freedom) > alpha) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+        if (high - low <= 1e-12 * @max(1.0, high)) break;
+    }
+    return (low + high) / 2;
+}
+
 /// Regularized incomplete beta function `I_x(a, b)`.
 fn regularizedIncompleteBeta(x: f64, a: f64, b: f64) f64 {
     if (x <= 0) return 0;
@@ -248,6 +280,36 @@ test "welch: Student-t tail matches reference values" {
     try std.testing.expectEqual(
         @as(f64, 1),
         studentTTwoSidedPValue(std.math.nan(f64), 10),
+    );
+}
+
+test "welch: Student-t critical values" {
+    const Case = struct { df: f64, confidence: f64, t: f64 };
+    const cases = [_]Case{
+        .{ .df = 1, .confidence = 0.95, .t = 12.706204736432095 },
+        .{ .df = 4, .confidence = 0.95, .t = 2.7764451051977987 },
+        .{ .df = 10, .confidence = 0.95, .t = 2.2281388519649385 },
+        .{ .df = 30, .confidence = 0.95, .t = 2.0422724563012373 },
+    };
+    for (cases) |case| {
+        try std.testing.expectApproxEqAbs(
+            case.t,
+            try studentTCritical(case.df, case.confidence),
+            1e-8,
+        );
+    }
+
+    try std.testing.expectError(
+        error.InvalidOptions,
+        studentTCritical(0, 0.95),
+    );
+    try std.testing.expectError(
+        error.InvalidOptions,
+        studentTCritical(10, 1.0),
+    );
+    try std.testing.expectError(
+        error.InvalidOptions,
+        studentTCritical(10, 0),
     );
 }
 

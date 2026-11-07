@@ -4,6 +4,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Summary = @import("summary.zig").Summary;
+const welch = @import("welch.zig");
 
 /// Online mean/variance accumulator using Welford's algorithm. `variance`
 /// is the population variance. Median and percentile fields in `summary` are
@@ -214,6 +215,18 @@ pub fn confidenceIntervalMean(values: []const f64, z: f64) ConfidenceInterval {
     };
 }
 
+/// Student-t confidence interval for the mean using `n - 1` degrees of
+/// freedom. Requires at least two values and a confidence in `(0, 1)`.
+pub fn confidenceIntervalMeanT(
+    values: []const f64,
+    confidence: f64,
+) !ConfidenceInterval {
+    if (values.len < 2) return error.InvalidOptions;
+    const degrees_of_freedom: f64 = @floatFromInt(values.len - 1);
+    const critical = try welch.studentTCritical(degrees_of_freedom, confidence);
+    return confidenceIntervalMean(values, critical);
+}
+
 /// Mean after discarding `floor(len * trim_fraction)` values from each end.
 /// `trim_fraction` must be in `[0, 0.5)`.
 pub fn trimmedMean(values: []const f64, trim_fraction: f64) f64 {
@@ -390,6 +403,26 @@ test "confidence interval: normal approximation" {
     const single_interval = confidenceIntervalMean(&single, 1.96);
     try std.testing.expectEqual(@as(f64, 0), single_interval.margin);
     try std.testing.expectEqual(@as(f64, 42), single_interval.lower);
+}
+
+test "confidence interval: Student-t" {
+    const values = [_]f64{ 1, 2, 3, 4, 5 };
+    const interval = try confidenceIntervalMeanT(&values, 0.95);
+    const expected_margin =
+        2.7764451051977987 * @sqrt(@as(f64, 2)) / @sqrt(@as(f64, 5));
+    try std.testing.expectApproxEqAbs(expected_margin, interval.margin, 1e-9);
+    try std.testing.expectApproxEqAbs(3 - expected_margin, interval.lower, 1e-9);
+    try std.testing.expectApproxEqAbs(3 + expected_margin, interval.upper, 1e-9);
+
+    const single = [_]f64{42};
+    try std.testing.expectError(
+        error.InvalidOptions,
+        confidenceIntervalMeanT(&single, 0.95),
+    );
+    try std.testing.expectError(
+        error.InvalidOptions,
+        confidenceIntervalMeanT(&values, 1.0),
+    );
 }
 
 test "trimmed mean: symmetric trimming" {

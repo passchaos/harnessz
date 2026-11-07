@@ -51,10 +51,12 @@ package. It also owns benchmark baseline storage and regression detection.
   missing-name errors, environment fingerprints, and synthetic regression
   comparisons.
 - Streaming stats tests must cover Welford mean/variance, histogram bucket
-  boundaries, confidence-interval margins, and trimmed means.
+  boundaries, normal and Student-t confidence-interval margins, and trimmed
+  means.
 - Welch tests must cover a known statistic/degrees-of-freedom pair with its
-  exact Student-t p-value, symmetry, identical distributions, zero variance,
-  the two-sample minimum, and invalid degrees of freedom/NaN/infinite inputs.
+  exact Student-t p-value, reference critical values, symmetry, identical
+  distributions, zero variance, the two-sample minimum, and invalid degrees of
+  freedom/NaN/infinite inputs.
 - Mann-Whitney tests must cover complete separation, symmetry, identical
   distributions, ties, the two-sample minimum, and an outlier case where Welch
   is not significant but the rank test is.
@@ -143,6 +145,10 @@ package. It also owns benchmark baseline storage and regression detection.
 - Tests receive the runner environment automatically through
   `std.testing.environ`. Applications should pass
   `std.process.Init.minimal.environ` via `Options.environ`.
+- `stats.confidenceIntervalMean` takes a caller-supplied critical value;
+  `stats.confidenceIntervalMeanT(values, confidence)` uses the exact Student-t
+  critical value with `n - 1` degrees of freedom and requires at least two
+  values. `stats.studentTCritical(df, confidence)` is public.
 - `bench` callbacks return `u64` and are kept observable with
   `bench.blackBox`, which wraps `std.mem.doNotOptimizeAway`.
 - `bench.Comparison.fromSamples` always computes a Welch p-value (exact
