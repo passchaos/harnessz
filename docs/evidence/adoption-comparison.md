@@ -19,7 +19,7 @@ per-repository infrastructure that `harnessz` can replace or complement.
 | --- | --- | --- | --- | --- |
 | `zev` | `bench/compare.zig`, `bench/highway_baseline.cpp` | ~28,500 lines | One large executable; 20 iterations x 5 repeats per kernel; ratio of the last repeat with a `min_ratio` gate; no significance test; implementations measured sequentially | `bench.compareMany` (rotating interleaved N-way), Welch + Mann-Whitney gates, deterministic text/JSON |
 | `spectra` | `bench/*.zig` (141 files) | ~15,000 lines | Per-file `main`; parse argv, warm up, one timed loop, print `elapsed_ns` and a checksum; no distribution or gate | `bench.runSuite`, `bench.run`/`runMeasured`, `bench.compareMany`, `baseline.report` |
-| `pdfz` | `tools/benchmark*.py`, `build/benchmark_provenance.zig` | ~15,400 lines | Python policy/artifact pipeline plus Zig provenance: dependency-closure SHA-256, ReleaseFast requirement, feature profile, artifact verification | `bench` sampling/isolation, `provenance.hashTree`/`fingerprint`, `baseline.Store` |
+| `pdfz` | `tools/benchmark*.py`, `build/benchmark_provenance.zig` | ~15,400 lines | Python policy/artifact pipeline plus Zig provenance: dependency-closure SHA-256, ReleaseFast requirement, feature profile, artifact verification | `bench` sampling/isolation, `provenance.hashTree`/`loadVerifiedFile`/`fingerprint`, `baseline.Store` |
 | `imx` | `examples/bench_*.zig` (91 files), `build_support/*.zig` (85 files) | ~25,000 + ~6,600 lines | Per-codec benchmark executables and build-time oracle scripts; ad-hoc timing and golden checks | `bench.runSuite`, `oracle`, `golden`, `evidence` |
 | `iris` | `examples/bench*.zig` (9 files) | ~1,900 lines | Single timed render/recording run; prints elapsed nanoseconds; no warmup sampling or statistics | `bench.run`/`runMeasured`, `bench.compareMany`, `baseline` |
 
@@ -113,7 +113,7 @@ has no significance model to be robust or non-robust.
 | Ordering bias | Sequential implementations | Rotating interleaved A/B and N-way comparison |
 | Regression tracking | Ad-hoc thresholds or shell scripts | JSON `baseline.Store`, environment fingerprints, deterministic text/JSON reports |
 | Isolation | Same process; a hang stops the run | Child process, process-group timeout, bounded stderr, protocol-only stdout |
-| Provenance | Python scripts or git commands per repo | SHA-256 of bytes/files/source trees plus a stable environment fingerprint |
+| Provenance | Python scripts or git commands per repo | SHA-256 of bytes/files/source trees, verified artifact loading, and a stable environment fingerprint |
 | Golden data | Per-repo comparison helpers | `golden.expectFile`/`expectDirectory` with update mode, normalization, bounds |
 | Evidence | Markdown conventions checked by hand | `evidence.Manifest` with path and test-name validation |
 | Output | Free-form text | Deterministic text, JSON, and CSV |
@@ -128,7 +128,8 @@ has no significance model to be robust or non-robust.
 4. Gate with `gateRobust` (noisy hosts) or `gateSignificant` (clean hosts).
 5. Record samples in `baseline.Store` and gate on `compare`/`baseline.report`.
 6. Fill `Entry.environment_fingerprint` with `provenance.fingerprint`, using
-   `provenance.hashTreeHex` and `hashFileHex` for source and binary hashes.
+   `provenance.hashTreeHex` for source hashes and `loadVerifiedFile` for
+   artifacts or dependency closures.
 7. Keep golden and evidence checks in the same package instead of per-repo
    helpers.
 

@@ -837,6 +837,12 @@ defer gpa.free(fingerprint);
 
 - `hashBytes`/`hashBytesHex` hash in-memory data with SHA-256.
 - `hashFile`/`hashFileHex` hash a single file relative to `dir`.
+- `loadVerifiedFile` reads an absolute path as a stable, non-symlinked regular
+  file and returns the bytes plus their digest. It rejects symlinked path
+  components, directories, empty files (when `allow_empty = false`), files
+  larger than `max_bytes`, and files whose metadata changes during the read
+  (`error.ChangedDuringRead`). Use it for benchmark artifacts and dependency
+  closures before trusting their hash.
 - `hashTree`/`hashTreeHex` traverse a directory deterministically: paths are
   sorted, VCS/cache/output directories are skipped by default, and each file
   contributes its path and content digest. `dir` does not need to have been

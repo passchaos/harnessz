@@ -95,8 +95,9 @@ package. It also owns benchmark baseline storage and regression detection.
   test names, and unknown test-name reporting with entry id and name.
 - Provenance tests must cover known SHA-256 vectors, file/byte hash agreement,
   deterministic and content-sensitive tree hashes, skipped cache directories,
-  traversal bounds, symlink policy, and fingerprint stability plus caller
-  fields.
+  traversal bounds, symlink policy, verified-file loading (relative/empty/
+  oversized/symlink/changed-during-read cases), and fingerprint stability plus
+  caller fields.
 - Multi-comparison tests must cover rotating call order, per-runner sample
   counts, synthetic summaries and pairwise p-values, flipped pair lookups,
   gate errors, duplicate/empty names, deterministic text/JSON, and
@@ -188,6 +189,9 @@ package. It also owns benchmark baseline storage and regression detection.
   directories by default, and return `error.ProvenanceTooLarge` past
   `max_files`/`max_total_bytes`. Symlinked files are hashed only with
   `follow_symlinks = true`; symlinked directories are never traversed.
+  `provenance.loadVerifiedFile` reads an absolute path as a stable,
+  non-symlinked regular file, rejects empty/oversized/changed-during-read
+  inputs, and returns owned bytes plus a SHA-256 digest; call `deinit()`.
   `provenance.fingerprint` is the richer alternative to
   `baseline.environmentFingerprint`; its format is opaque (equality only) and
   Linux CPU probes degrade to `unknown`.
