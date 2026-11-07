@@ -180,6 +180,23 @@ The kernels and corpus definitions stay in the downstream repository. The
 shared package only owns sampling, statistics, gates, isolation, provenance,
 and reporting, so migration does not move domain code out of its repository.
 
+## Verification
+
+Recorded on 2026-11-08:
+
+- `zig build test`: 269/269 tests passed (Debug).
+- `zig build test -Doptimize=ReleaseSafe`: passed.
+- `zig build test -Doptimize=ReleaseFast`: passed.
+- `zig build check-cross`: Windows x86_64-gnu, macOS aarch64, and Linux
+  x86_64-gnu child executables compile.
+- `cd examples/consumer && zig build run`: prints `consumer smoke ok`.
+- `zig build adoption-bench -- --trials 100 --samples 15 --iterations 20
+  --json docs/evidence/adoption-bench.json`: produced the results above.
+
+The package integration suite also contains `integration: downstream adoption
+workflow`, which composes the suite, baseline, provenance, golden, and evidence
+APIs in one temporary workspace.
+
 ## Caveats
 
 - The measured workload is synthetic. It isolates harness methodology (sampling,
