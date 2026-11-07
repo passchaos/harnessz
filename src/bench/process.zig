@@ -122,6 +122,81 @@ pub fn runProcess(
     return result.takeResponse();
 }
 
+pub const ListOptions = struct {
+    /// Upper bound on the child's stdout.
+    max_output_bytes: usize = 1024 * 1024,
+};
+
+/// Spawn `argv` with `--harnessz-list` and parse the JSON name array.
+///
+/// The caller owns the outer slice and every name; free each with
+/// `allocator.free`. The child's stderr is inherited so a chatty list command
+/// cannot fill a pipe. This helper does not enforce a timeout; list mode is a
+/// short registry write followed by exit.
+pub fn listNames(
+    alloc: Allocator,
+    io: std.Io,
+    argv: []const []const u8,
+    options: ListOptions,
+) ![][]u8 {
+    if (argv.len == 0 or options.max_output_bytes == 0) return error.InvalidOptions;
+
+    const child_argv = try alloc.alloc([]const u8, argv.len + 1);
+    defer alloc.free(child_argv);
+    @memcpy(child_argv[0..argv.len], argv);
+    child_argv[argv.len] = "--harnessz-list";
+
+    var child = std.process.spawn(io, .{
+        .argv = child_argv,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .inherit,
+    }) catch return error.SpawnFailed;
+    var waited = false;
+    defer if (!waited) child.kill(io);
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(alloc);
+    const stdout_file = child.stdout orelse return error.SpawnFailed;
+    var read_buffer: [4096]u8 = undefined;
+    var reader = stdout_file.readerStreaming(io, &read_buffer);
+    reader.interface.appendRemaining(alloc, &output, .limited(options.max_output_bytes)) catch |err| switch (err) {
+        error.StreamTooLong => return error.OutputTooLarge,
+        error.ReadFailed => return error.ReadFailed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    const term = child.wait(io) catch return error.WaitFailed;
+    waited = true;
+    const exit_code = switch (term) {
+        .exited => |code| code,
+        else => return error.ChildExitFailure,
+    };
+    if (exit_code != 0) return error.ChildExitFailure;
+
+    const parsed = std.json.parseFromSlice(
+        []const []const u8,
+        alloc,
+        output.items,
+        .{ .allocate = .alloc_always },
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidJson,
+    };
+    defer parsed.deinit();
+
+    const names = try alloc.alloc([]u8, parsed.value.len);
+    errdefer alloc.free(names);
+    var initialized: usize = 0;
+    errdefer for (names[0..initialized]) |name| alloc.free(name);
+    for (parsed.value, 0..) |name, index| {
+        if (name.len == 0) return error.InvalidResponse;
+        names[index] = try alloc.dupe(u8, name);
+        initialized += 1;
+    }
+    return names;
+}
+
 /// Like `runProcessResponse`, but also returns the bounded child stderr.
 /// Timeouts and benchmark failures are reported through the result
 /// (`timed_out`, `response.error_name`) instead of typed errors, except for

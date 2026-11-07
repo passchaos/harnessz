@@ -88,6 +88,8 @@ package. It also owns benchmark baseline storage and regression detection.
   - Process-isolated suites must aggregate multiple names, record per-entry
     benchmark failures without stopping, continue after a timeout, and render
     deterministic text/JSON plus `toEntries` for successful samples.
+  - Name discovery must match `--harnessz-list`, preserve registration order,
+    and feed the isolated suite runner.
   - Never assert absolute timings, only structure, counts, checksums, and
     error kinds.
 - Baseline tests must cover opt-in fingerprint matching, mismatch, missing
@@ -247,7 +249,9 @@ package. It also owns benchmark baseline storage and regression detection.
   records benchmark failures/timeouts/parent errors on each `Entry`, and
   continues with the remaining names. The `Suite` owns entries in an arena;
   call `deinit()`. `ok()` requires every entry to pass; `toEntries` borrows the
-  successful samples for baseline reporting.
+  successful samples for baseline reporting. `bench.process.listNames` discovers
+  the child's registered names through `--harnessz-list`; the caller frees each
+  name and the outer slice.
 - Child stdout is protocol-only (one JSON `Response`, or one JSON name array in
   list mode); diagnostics must go to stderr.
 - `protocol.Response.checksum` is an optional additive extension carrying the

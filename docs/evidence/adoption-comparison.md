@@ -117,7 +117,7 @@ has no significance model to be robust or non-robust.
 | Significance | None; fixed ratio gate | Welch t-test with an exact Student-t tail and Mann-Whitney U, both with configurable gates |
 | Ordering bias | Sequential implementations | Rotating interleaved A/B and N-way comparison |
 | Regression tracking | Ad-hoc thresholds or shell scripts | JSON `baseline.Store`, environment fingerprints, deterministic text/JSON reports |
-| Isolation | Same process; a hang stops the run | Child process per benchmark (`process_suite`), process-group timeout, bounded stderr, protocol-only stdout |
+| Isolation | Same process; a hang stops the run | Child process per benchmark (`process_suite` + `listNames`), process-group timeout, bounded stderr, protocol-only stdout |
 | Provenance | Python scripts or git commands per repo | SHA-256 of bytes/files/source trees, verified artifact loading, strict artifact manifests, and a stable environment fingerprint |
 | Golden data | Per-repo comparison helpers | `golden.expectFile`/`expectDirectory` with update mode, normalization, bounds |
 | Evidence | Markdown conventions checked by hand | `evidence.Manifest` with path and test-name validation |

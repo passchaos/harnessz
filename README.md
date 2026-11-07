@@ -720,6 +720,18 @@ reports are deterministic. `toEntries` borrows the successful samples for
 baseline reporting. The child executable must register the same names; use the
 `bench.registry.Registry` shown under "Child executable".
 
+`bench.process.listNames(alloc, io, argv, .{})` runs the child with
+`--harnessz-list` and returns its registered names, so callers do not have to
+duplicate the registry:
+
+```zig
+const names = try harnessz.bench.process.listNames(gpa, io, &.{child_exe}, .{});
+defer {
+    for (names) |name| gpa.free(name);
+    gpa.free(names);
+}
+```
+
 ### Process isolation boundaries
 
 This is process isolation, not OS-level sandboxing. The child runs as the same

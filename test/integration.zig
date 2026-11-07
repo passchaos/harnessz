@@ -1039,3 +1039,39 @@ test "integration: process-isolated suite records a timeout and continues" {
     // The suite continues after the timeout.
     try std.testing.expect(suite.find("checksum").?.ok());
 }
+
+test "integration: process list-names helper matches list mode" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const names = try harnessz.bench.process.listNames(
+        alloc,
+        io,
+        &.{bench_child.child_exe},
+        .{ .max_output_bytes = 4096 },
+    );
+    defer {
+        for (names) |name| alloc.free(name);
+        alloc.free(names);
+    }
+
+    try std.testing.expectEqual(@as(usize, 12), names.len);
+    try std.testing.expectEqualStrings("checksum", names[0]);
+    try std.testing.expectEqualStrings("call-count", names[1]);
+
+    // Discovered names can be fed directly to the isolated suite runner.
+    var suite = try harnessz.bench.process_suite.run(alloc, io, .{
+        .argv = &.{bench_child.child_exe},
+        .names = names,
+        .run = .{ .warmup_iterations = 0, .iterations = 2 },
+        .timeout_ns = 10 * std.time.ns_per_s,
+        .max_benchmarks = 2,
+    });
+    defer suite.deinit();
+    try std.testing.expectEqual(@as(usize, 2), suite.count());
+    try std.testing.expect(suite.find("checksum").?.ok());
+    try std.testing.expectEqual(
+        @as(?u64, expectedBenchChecksum()),
+        suite.find("checksum").?.checksum,
+    );
+}
