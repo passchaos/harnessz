@@ -49,4 +49,23 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run harnessz unit and integration tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_integration_tests.step);
+
+    // Adoption evidence tool. Not part of `test`: it reports host-dependent
+    // wall-clock numbers and writes an optional JSON artifact.
+    const adoption_bench = b.addExecutable(.{
+        .name = "harnessz-adoption-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/adoption_bench.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "harnessz", .module = harnessz_mod }},
+        }),
+    });
+    const run_adoption_bench = b.addRunArtifact(adoption_bench);
+    if (b.args) |args| run_adoption_bench.addArgs(args);
+    const adoption_step = b.step(
+        "adoption-bench",
+        "Compare harnessz sampling with downstream ad-hoc timing styles",
+    );
+    adoption_step.dependOn(&run_adoption_bench.step);
 }

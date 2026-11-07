@@ -137,6 +137,11 @@ pub const Comparison = struct {
     p_value: f64 = 1,
     /// `p_value <= significance_alpha`.
     significant: bool = false,
+    /// Two-sided Mann-Whitney U p-value (tie-corrected normal approximation).
+    /// Unlike `p_value`, ranks are not dominated by timing outliers.
+    robust_p_value: f64 = 1,
+    /// `robust_p_value <= significance_alpha`.
+    robust_significant: bool = false,
 
     /// Conventional alpha used for the `significant` convenience flag.
     pub const significance_alpha: f64 = 0.05;
@@ -144,17 +149,22 @@ pub const Comparison = struct {
     /// Build a comparison from already-collected samples. This makes gate
     /// logic testable without running a timer.
     ///
-    /// Welch's test needs at least two samples per side. When either side is
-    /// shorter, `p_value` is 1 and `significant` is false.
+    /// Welch's test and the rank test need at least two samples per side.
+    /// When either side is shorter, both p-values are 1 and neither
+    /// significance flag is set.
     pub fn fromSamples(a_samples: []const u64, b_samples: []const u64) Comparison {
         const welch_result = stats.welchTTest(u64, a_samples, b_samples) catch
             stats.WelchResult{ .t = 0, .degrees_of_freedom = 0, .p_approx = 1 };
+        const rank_result = stats.mannWhitneyU(u64, a_samples, b_samples) catch
+            stats.RankResult{ .u = 0, .z = 0, .p_approx = 1, .tie_groups = 0 };
         return .{
             .a = stats.summarize(u64, a_samples),
             .b = stats.summarize(u64, b_samples),
             .rounds = @min(a_samples.len, b_samples.len),
             .p_value = welch_result.p_approx,
             .significant = welch_result.p_approx <= significance_alpha,
+            .robust_p_value = rank_result.p_approx,
+            .robust_significant = rank_result.p_approx <= significance_alpha,
         };
     }
 
@@ -188,6 +198,18 @@ pub const Comparison = struct {
             self.p_value <= max_p_value;
     }
 
+    /// Like `gateSignificant`, but uses the outlier-robust Mann-Whitney
+    /// p-value instead of Welch's. `max_p_value` must be finite and in
+    /// `[0, 1]`; invalid thresholds fail the gate.
+    pub fn gateRobust(self: Comparison, min_ratio: f64, max_p_value: f64) bool {
+        if (!std.math.isFinite(max_p_value) or max_p_value < 0 or max_p_value > 1) {
+            return false;
+        }
+        return self.gate(min_ratio) and
+            self.robust_significant and
+            self.robust_p_value <= max_p_value;
+    }
+
     pub fn writeJson(self: Comparison, writer: *std.Io.Writer) !void {
         const Wire = struct {
             rounds: usize,
@@ -196,6 +218,8 @@ pub const Comparison = struct {
             speedup: ?f64,
             p_value: f64,
             significant: bool,
+            robust_p_value: f64,
+            robust_significant: bool,
             a: stats.Summary,
             b: stats.Summary,
         };
@@ -204,6 +228,8 @@ pub const Comparison = struct {
             .speedup = finiteOptional(self.speedup()),
             .p_value = self.p_value,
             .significant = self.significant,
+            .robust_p_value = self.robust_p_value,
+            .robust_significant = self.robust_significant,
             .a = self.a,
             .b = self.b,
         }, .{
@@ -230,6 +256,14 @@ pub const Comparison = struct {
         try writer.print("significant,{d},{d}\n", .{
             @intFromBool(self.significant),
             @intFromBool(self.significant),
+        });
+        try writer.print("robust_p_value,{d},{d}\n", .{
+            self.robust_p_value,
+            self.robust_p_value,
+        });
+        try writer.print("robust_significant,{d},{d}\n", .{
+            @intFromBool(self.robust_significant),
+            @intFromBool(self.robust_significant),
         });
     }
 

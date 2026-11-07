@@ -3,6 +3,7 @@
 const std = @import("std");
 const streaming = @import("stats/streaming.zig");
 const welch = @import("stats/welch.zig");
+const rank = @import("stats/rank.zig");
 
 pub const Summary = @import("stats/summary.zig").Summary;
 
@@ -22,6 +23,11 @@ pub const welchTTest = welch.welchTTest;
 pub const twoSidedNormalPValue = welch.twoSidedNormalPValue;
 pub const normalCdf = welch.normalCdf;
 pub const erfc = welch.erfc;
+
+/// Two-sample Mann-Whitney U (rank-sum) test with a tie-corrected normal
+/// approximation. Robust to timing outliers.
+pub const RankResult = rank.RankResult;
+pub const mannWhitneyU = rank.mannWhitneyU;
 
 /// Population standard deviation.
 pub fn stddev(comptime T: type, values: []const T) f64 {
@@ -251,4 +257,5 @@ test {
     // package test run.
     std.testing.refAllDecls(streaming);
     std.testing.refAllDecls(welch);
+    std.testing.refAllDecls(rank);
 }

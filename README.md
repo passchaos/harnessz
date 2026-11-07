@@ -14,8 +14,8 @@ Zig 0.16.0 and uses `std.Io` with an explicit `io` value.
 | `snapshot` | Named in-memory or file-backed snapshots with `check`, `checkFmt`, and update mode |
 | `oracle` | Byte/integer/float/complex comparisons, structural JSON comparison, tolerances, ULP distance, NaN/inf/signed-zero handling, Wyhash checksums |
 | `determinism` | Repeated-run byte stability, first divergence, thread-count matrix, real threaded runs with spawn fallback |
-| `stats` | Batch summaries plus streaming Welford accumulation, linear histograms, confidence intervals, trimmed means, and Welch's t-test |
-| `bench` | Warmup/timed runs, min-time sampling, interleaved A/B comparison, significance gates, CPU pinning, peak RSS, counting allocator, JSON/CSV, `blackBox`, plus process-isolated child/parent runners with process-group timeouts and bounded stderr capture |
+| `stats` | Batch summaries plus streaming Welford accumulation, linear histograms, confidence intervals, trimmed means, Welch's t-test, and a tie-corrected Mann-Whitney U rank-sum test |
+| `bench` | Warmup/timed runs, min-time sampling, interleaved A/B and multi-implementation comparison, significance and robust gates, CPU pinning, peak RSS, counting allocator, JSON/CSV, `blackBox`, plus process-isolated child/parent runners with process-group timeouts and bounded stderr capture |
 | `baseline` | JSON baseline storage, environment fingerprints, optional fingerprint enforcement, median regression detection, entry updates, and deterministic text/JSON comparison reports |
 | `fixture` | `HARNESSZ_FIXTURES` / `testdata/` resolution and workspace helpers |
 | `evidence` | Evidence manifests with JSON round-trip, missing-path validation, and test-name validation |
@@ -36,6 +36,17 @@ zig build test -Doptimize=ReleaseFast
 
 Tests live beside each implementation. Package-level integration tests live in
 `test/integration.zig`.
+
+The adoption comparison against downstream ad-hoc timing loops is a separate,
+host-dependent tool:
+
+```sh
+zig build adoption-bench -- --trials 100 --samples 15 --iterations 20
+```
+
+Results and methodology are recorded in
+`docs/evidence/adoption-comparison.md`; the tool writes an optional JSON
+artifact with `--json <path>`. It is not part of `zig build test`.
 
 ## Golden files
 
@@ -346,6 +357,22 @@ p-value is 1 and the comparison is not significant.
 passes, the comparison is significant at 0.05, and `p_value <= max_p_value`.
 The JSON and CSV renderings include both fields.
 
+Welch's test is sensitive to timing outliers: one scheduler hiccup can inflate
+the variance enough to hide a real shift. `fromSamples` therefore also runs the
+tie-corrected Mann-Whitney U test and exposes `robust_p_value` and
+`robust_significant`. `gateRobust(min_ratio, max_p_value)` is the
+outlier-tolerant counterpart of `gateSignificant`:
+
+```zig
+// Same 10% slowdown, with one 1000 ns outlier in the candidate.
+const comparison = harnessz.bench.Comparison.fromSamples(
+    &.{ 110, 111, 109, 110, 1000 },
+    &.{ 100, 101, 99, 100, 100 },
+);
+try std.testing.expect(!comparison.gateSignificant(1.05, 0.05)); // Welch
+try std.testing.expect(comparison.gateRobust(1.05, 0.05));        // rank-sum
+```
+
 ### Multi-implementation comparison
 
 `compareMany` measures any number of named implementations in one interleaved
@@ -382,9 +409,11 @@ number of measured rounds, `samples_ns[i]` holds one sample per round,
 `i < j` comparison. `comparisonOf(a, b)` returns the pair with `a` as the
 numerator, flipping the stored pair when needed; `gatePair` applies
 `gateSignificant` and returns `error.UnknownName` or `error.InvalidPair` for
-unknown or identical names. Text and JSON reports are deterministic and follow
-registration order. `MultiComparison.fromSamples` builds the same structure
-from synthetic samples for tests and offline analysis.
+unknown or identical names. Each pair carries both the Welch and robust
+p-values, so `gatePair`-style checks can use either significance model. Text
+and JSON reports are deterministic and follow registration order.
+`MultiComparison.fromSamples` builds the same structure from synthetic samples
+for tests and offline analysis.
 
 Measured runs and host controls:
 

@@ -53,6 +53,9 @@ package. It also owns benchmark baseline storage and regression detection.
   boundaries, confidence-interval margins, and trimmed means.
 - Welch tests must cover a known statistic/degrees-of-freedom pair, symmetry,
   identical distributions, zero variance, and the two-sample minimum.
+- Mann-Whitney tests must cover complete separation, symmetry, identical
+  distributions, ties, the two-sample minimum, and an outlier case where Welch
+  is not significant but the rank test is.
 - Bench environment tests must skip cleanly when Linux probes return
   `error.Unsupported`; CPU-pinning tests must restore the original affinity
   mask. RSS tests assert positivity only, never a specific value.
@@ -115,10 +118,12 @@ package. It also owns benchmark baseline storage and regression detection.
   `std.process.Init.minimal.environ` via `Options.environ`.
 - `bench` callbacks return `u64` and are kept observable with
   `bench.blackBox`, which wraps `std.mem.doNotOptimizeAway`.
-- `bench.Comparison.fromSamples` always computes a Welch p-value; fewer than
-  two samples per side yields `p_value = 1` and `significant = false` instead
-  of an error. `gateSignificant` combines the ratio gate, the 0.05
-  significance flag, and the caller's `max_p_value`.
+- `bench.Comparison.fromSamples` always computes a Welch p-value and a
+  tie-corrected Mann-Whitney U p-value; fewer than two samples per side yields
+  `p_value = robust_p_value = 1` and both significance flags false instead of
+  an error. `gateSignificant` combines the ratio gate, Welch significance, and
+  the caller's `max_p_value`; `gateRobust` is the outlier-tolerant counterpart
+  using the rank-sum p-value.
 - `bench.runMeasured` passes a `CountingAllocator` to the callback and reports
   peak RSS (nullable on unsupported platforms) plus peak allocated bytes.
   `bench.runMeasuredRuntime` is the type-erased counterpart used by the
@@ -130,8 +135,9 @@ package. It also owns benchmark baseline storage and regression detection.
 - `bench.compareMany` interleaves N named `bench.Runner` values and rotates the
   starting point each round. `MultiComparison` owns names/samples in an arena;
   call `deinit()`. `pairs` are stored `i < j`; `comparisonOf(a, b)` returns the
-  pair with `a` as numerator (flipping when needed), and `gatePair` returns
-  `error.UnknownName`/`error.InvalidPair`. Text and JSON reports are
+  pair with `a` as numerator (flipping when needed); `gatePair` and
+  `gateRobustPair` return `error.UnknownName`/`error.InvalidPair`. Text and
+  JSON reports are
   deterministic in registration order. `MultiComparison.fromSamples` supports
   synthetic tests, and `toEntries` borrows the owned names/samples as
   `baseline.Entry` values.

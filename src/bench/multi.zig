@@ -113,6 +113,21 @@ pub const MultiComparison = struct {
         return comparison.gateSignificant(min_ratio, max_p_value);
     }
 
+    /// `gateRobust` for a named pair. Unknown names return
+    /// `error.UnknownName`; identical names return `error.InvalidPair`.
+    pub fn gateRobustPair(
+        self: MultiComparison,
+        a_name: []const u8,
+        b_name: []const u8,
+        min_ratio: f64,
+        max_p_value: f64,
+    ) !bool {
+        if (std.mem.eql(u8, a_name, b_name)) return error.InvalidPair;
+        const comparison = self.comparisonOf(a_name, b_name) orelse
+            return error.UnknownName;
+        return comparison.gateRobust(min_ratio, max_p_value);
+    }
+
     /// Borrow this comparison's names, samples, and summaries as baseline
     /// entries. The returned slice is allocated with `alloc`; the strings and
     /// sample slices stay owned by `self` and must outlive the entries.
@@ -153,14 +168,18 @@ pub const MultiComparison = struct {
         }
 
         if (self.pairs.len == 0) return;
-        try writer.writeAll("\na\tb\tspeedup\tp_value\tsignificant\n");
+        try writer.writeAll(
+            "\na\tb\tspeedup\tp_value\tsignificant\trobust_p_value\trobust_significant\n",
+        );
         for (self.pairs) |pair| {
-            try writer.print("{s}\t{s}\t{d:.3}\t{d:.6}\t{s}\n", .{
+            try writer.print("{s}\t{s}\t{d:.3}\t{d:.6}\t{s}\t{d:.6}\t{s}\n", .{
                 self.names[pair.a],
                 self.names[pair.b],
                 pair.comparison.speedup(),
                 pair.comparison.p_value,
                 if (pair.comparison.significant) "yes" else "no",
+                pair.comparison.robust_p_value,
+                if (pair.comparison.robust_significant) "yes" else "no",
             });
         }
     }
@@ -186,6 +205,8 @@ pub const MultiComparison = struct {
             speedup: ?f64,
             p_value: f64,
             significant: bool,
+            robust_p_value: f64,
+            robust_significant: bool,
         };
         const Wire = struct {
             rounds: usize,
@@ -218,6 +239,8 @@ pub const MultiComparison = struct {
                 .speedup = finiteOptional(pair.comparison.speedup()),
                 .p_value = pair.comparison.p_value,
                 .significant = pair.comparison.significant,
+                .robust_p_value = pair.comparison.robust_p_value,
+                .robust_significant = pair.comparison.robust_significant,
             };
         }
 
@@ -410,6 +433,8 @@ fn flip(comparison: bench.Comparison) bench.Comparison {
         .rounds = comparison.rounds,
         .p_value = comparison.p_value,
         .significant = comparison.significant,
+        .robust_p_value = comparison.robust_p_value,
+        .robust_significant = comparison.robust_significant,
     };
 }
 
@@ -491,6 +516,10 @@ test "bench multi: fromSamples computes summaries and pairwise comparisons" {
     try std.testing.expectEqual(@as(f64, 0.5), ab.speedup());
     try std.testing.expectEqual(@as(f64, 0), ab.p_value);
     try std.testing.expect(ab.significant);
+    // The rank test is conservative with three heavily tied samples, but it
+    // still separates the distributions at the conventional level.
+    try std.testing.expect(ab.robust_p_value < 0.05);
+    try std.testing.expect(ab.robust_significant);
 
     // Reversed names flip the ratio but keep the two-sided p-value.
     const ba = result.comparisonOf("b", "a").?;
@@ -502,6 +531,7 @@ test "bench multi: fromSamples computes summaries and pairwise comparisons" {
 
     try std.testing.expect(try result.gatePair("b", "a", 1.9, 0.05));
     try std.testing.expect(!try result.gatePair("a", "b", 0.9, 0.05));
+    try std.testing.expect(try result.gateRobustPair("b", "a", 1.9, 0.05));
     try std.testing.expectError(
         error.InvalidPair,
         result.gatePair("a", "a", 1.0, 0.05),
@@ -551,6 +581,8 @@ test "bench multi: text and JSON reports are deterministic" {
         speedup: ?f64,
         p_value: f64,
         significant: bool,
+        robust_p_value: f64,
+        robust_significant: bool,
     };
     const Parsed = struct {
         rounds: usize,

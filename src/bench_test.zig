@@ -226,7 +226,26 @@ test "bench significance: single samples are not significant" {
     const comparison = bench.Comparison.fromSamples(&[_]u64{100}, &[_]u64{50});
     try std.testing.expect(!comparison.significant);
     try std.testing.expectEqual(@as(f64, 1), comparison.p_value);
+    try std.testing.expect(!comparison.robust_significant);
+    try std.testing.expectEqual(@as(f64, 1), comparison.robust_p_value);
     try std.testing.expect(!comparison.gateSignificant(1.0, 1.0));
+    try std.testing.expect(!comparison.gateRobust(1.0, 1.0));
+}
+
+test "bench significance: rank test survives a timing outlier" {
+    const baseline = [_]u64{ 100, 101, 99, 100, 100 };
+    const candidate = [_]u64{ 110, 111, 109, 110, 1000 };
+    const comparison = bench.Comparison.fromSamples(&candidate, &baseline);
+
+    // Welch's variance is dominated by the outlier.
+    try std.testing.expect(comparison.p_value > 0.05);
+    try std.testing.expect(!comparison.significant);
+    try std.testing.expect(!comparison.gateSignificant(1.05, 0.05));
+
+    // Ranks are not, so the robust gate still sees the 10% shift.
+    try std.testing.expect(comparison.robust_p_value < 0.05);
+    try std.testing.expect(comparison.robust_significant);
+    try std.testing.expect(comparison.gateRobust(1.05, 0.05));
 }
 
 test "bench comparison: JSON and CSV output" {
@@ -239,11 +258,14 @@ test "bench comparison: JSON and CSV output" {
     defer alloc.free(json);
     try std.testing.expect(std.mem.find(u8, json, "\"speedup\"") != null);
     try std.testing.expect(std.mem.find(u8, json, "\"median\"") != null);
+    try std.testing.expect(std.mem.find(u8, json, "\"robust_p_value\"") != null);
+    try std.testing.expect(std.mem.find(u8, json, "\"robust_significant\"") != null);
 
     const csv = try comparison.toCsv(alloc);
     defer alloc.free(csv);
     try std.testing.expect(std.mem.find(u8, csv, "metric,a,b") != null);
     try std.testing.expect(std.mem.find(u8, csv, "median_ns") != null);
+    try std.testing.expect(std.mem.find(u8, csv, "robust_p_value") != null);
 }
 
 test "bench stats: batch size is reported" {
