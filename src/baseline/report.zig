@@ -107,6 +107,40 @@ pub const Report = struct {
         return out.toOwnedSlice();
     }
 
+    /// Deterministic Markdown table in the same row order as `writeText`.
+    /// Suitable for committed benchmark-history documents.
+    pub fn writeMarkdown(self: Report, writer: *std.Io.Writer) !void {
+        try writer.writeAll(
+            "| name | baseline_ns | current_ns | speedup | p_value | status |\n" ++
+                "| --- | --- | --- | --- | --- | --- |\n",
+        );
+        for (self.rows) |row| {
+            var baseline_buffer: [32]u8 = undefined;
+            var current_buffer: [32]u8 = undefined;
+            var speedup_buffer: [32]u8 = undefined;
+            var p_buffer: [32]u8 = undefined;
+            try writer.print("| {s} | {s} | {s} | {s} | {s} | {s} |\n", .{
+                row.name,
+                formatOptional(&baseline_buffer, row.baseline_median_ns, "{d:.0}"),
+                formatOptional(&current_buffer, row.current_median_ns, "{d:.0}"),
+                formatOptional(&speedup_buffer, row.speedup, "{d:.2}x"),
+                formatOptional(&p_buffer, row.p_value, "{d:.4}"),
+                row.status.marker(),
+            });
+        }
+        try writer.print(
+            "\nsummary: regressions={d} improvements={d} missing={d} extra={d}\n",
+            .{ self.regressions, self.improvements, self.missing, self.extra },
+        );
+    }
+
+    pub fn toMarkdown(self: Report, allocator: Allocator) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        try self.writeMarkdown(&out.writer);
+        return out.toOwnedSlice();
+    }
+
     pub fn writeJson(self: Report, writer: *std.Io.Writer) !void {
         // Non-finite speedups (for example, a zero current median) have no
         // JSON representation. Emit them as absent rather than writing the
@@ -430,6 +464,42 @@ test "report: text snapshot for an empty store" {
         \\summary: regressions=0 improvements=0 missing=0 extra=0
         \\
     , out.written());
+}
+
+test "report: Markdown snapshot and determinism" {
+    const alloc = std.testing.allocator;
+    const baseline_samples = [_]u64{ 100, 100, 100 };
+    const current_samples = [_]u64{ 130, 130, 130 };
+
+    const store: baseline.Store = .{
+        .allocator = alloc,
+        .entries = &.{.{
+            .name = "render",
+            .samples_ns = &baseline_samples,
+            .summary = stats.summarize(u64, &baseline_samples),
+        }},
+    };
+    const current = [_]baseline.Entry{.{
+        .name = "render",
+        .samples_ns = &current_samples,
+        .summary = stats.summarize(u64, &current_samples),
+    }};
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    var result = try report(alloc, &out.writer, &store, &current, .{});
+    defer result.deinit();
+
+    const first = try result.toMarkdown(alloc);
+    defer alloc.free(first);
+    const second = try result.toMarkdown(alloc);
+    defer alloc.free(second);
+    try std.testing.expectEqualStrings(first, second);
+    try std.testing.expect(
+        std.mem.find(u8, first, "| name | baseline_ns | current_ns | speedup | p_value | status |") != null,
+    );
+    try std.testing.expect(std.mem.find(u8, first, "| render | 100 | 130 | 0.77x |") != null);
+    try std.testing.expect(std.mem.find(u8, first, "| REGRESSED |") != null);
 }
 
 test "report: non-finite speedup is omitted from JSON" {

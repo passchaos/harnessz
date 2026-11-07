@@ -89,8 +89,8 @@ package. It also owns benchmark baseline storage and regression detection.
 - Baseline tests must cover opt-in fingerprint matching, mismatch, missing
   expected fingerprints, and the unchanged default.
 - Baseline report tests must cover mixed regressions/improvements/missing/
-  extra rows, deterministic text and JSON snapshots, the empty store, invalid
-  regression ratios, and duplicate current names.
+  extra rows, deterministic text, JSON, and Markdown snapshots, the empty
+  store, invalid regression ratios, and duplicate current names.
 - Evidence tests must cover JSON round-trip, missing-path validation, known
   test names, and unknown test-name reporting with entry id and name.
 - Provenance tests must cover known SHA-256 vectors, file/byte hash agreement,
@@ -204,7 +204,8 @@ package. It also owns benchmark baseline storage and regression detection.
 - `baseline.report.report(alloc, writer, store, current, options)` writes a
   deterministic text table (rows sorted by name) and returns a `Report` with
   `regressions`, `improvements`, `missing`, `extra`, `ok()`, `toText`/`toJson`
-  and `writeText`/`writeJson`. `Report.deinit()` releases the rows. A row is
+  and `writeText`/`writeJson`, plus `toMarkdown`/`writeMarkdown` for committed
+  history documents. `Report.deinit()` releases the rows. A row is
   `regressed` above `baseline * max_regression_ratio` and `improved` below
   `baseline / max_regression_ratio`; p-values require at least two raw samples
   on both sides.

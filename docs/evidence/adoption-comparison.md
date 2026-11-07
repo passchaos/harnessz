@@ -121,7 +121,7 @@ has no significance model to be robust or non-robust.
 | Provenance | Python scripts or git commands per repo | SHA-256 of bytes/files/source trees, verified artifact loading, strict artifact manifests, and a stable environment fingerprint |
 | Golden data | Per-repo comparison helpers | `golden.expectFile`/`expectDirectory` with update mode, normalization, bounds |
 | Evidence | Markdown conventions checked by hand | `evidence.Manifest` with path and test-name validation |
-| Output | Free-form text | Deterministic text, JSON, and CSV |
+| Output | Free-form text | Deterministic text, JSON, CSV, and Markdown history tables |
 
 ## Adoption recipe
 
@@ -170,7 +170,7 @@ artifact, golden, and baseline APIs.
 
 | Repository | Keep | Replace |
 | --- | --- | --- |
-| `zev` | SIMD/scalar kernels and the Highway baseline | `BenchmarkResult`, `nsPerIter`, `printResultChecked`, and the `min_ratio` loop with `compareMany`, `gateRobust`, and `baseline.report` |
+| `zev` | SIMD/scalar kernels and the Highway baseline | `BenchmarkResult`, `nsPerIter`, `printResultChecked`, and the `min_ratio` loop with `compareMany`, `gateRobust`, and `baseline.report` (including Markdown history) |
 | `spectra` | Per-format benchmark kernels and checksums | Per-file `main` argv parsing/timing/output with a registry plus `runSuite`; use `measure_memory = true` for allocation/RSS numbers instead of per-file tracking allocators |
 | `iris` | Renderer/scene setup | The single `Clock.awake.now` block with `bench.runMeasured` or `compareMany` across renderer configurations |
 | `imx` | Codec kernels and reference-library oracles | Ad-hoc byte comparisons with `oracle.compareBytes`/`compareJson`; golden writes with `golden.expectFile`/`expectDirectory`; benchmark mains with `runSuite` |

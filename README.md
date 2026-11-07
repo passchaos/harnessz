@@ -783,10 +783,12 @@ The text table contains `name`, `baseline_ns`, `current_ns`, `speedup`,
 `p_value`, and a status marker (`REGRESSED`, `IMPROVED`, `UNCHANGED`,
 `MISSING`, or `EXTRA`). `Report` exposes `regressions`, `improvements`,
 `missing`, and `extra` counts plus `ok()`; `writeJson`/`toJson` emit the same
-rows with a summary object. `missing` counts baseline entries with no current
-counterpart, and `extra` counts current entries with no baseline. Rows without
-a usable baseline or current median return `error.InvalidBaseline` or
-`error.InvalidEntry`; duplicate current names return `error.DuplicateEntry`.
+rows with a summary object. `writeMarkdown`/`toMarkdown` render a deterministic
+Markdown table for committed benchmark-history documents. `missing` counts
+baseline entries with no current counterpart, and `extra` counts current
+entries with no baseline. Rows without a usable baseline or current median
+return `error.InvalidBaseline` or `error.InvalidEntry`; duplicate current names
+return `error.DuplicateEntry`.
 
 Fingerprint enforcement is opt-in. With `require_fingerprint = true`, `compare`
 returns `error.EnvironmentMismatch` unless the entry's
