@@ -94,6 +94,10 @@ package. It also owns benchmark baseline storage and regression detection.
   deterministic and content-sensitive tree hashes, skipped cache directories,
   traversal bounds, symlink policy, and fingerprint stability plus caller
   fields.
+- Multi-comparison tests must cover rotating call order, per-runner sample
+  counts, synthetic summaries and pairwise p-values, flipped pair lookups,
+  gate errors, duplicate/empty names, deterministic text/JSON, and
+  `toEntries` borrowing.
 - Golden directory tests must cover create/update/match, missing/extra/changed
   detection, update-mode pruning, deterministic report ordering, and bounds.
 - JSON oracle tests must cover reordered keys, array order, numeric tolerance,
@@ -123,6 +127,14 @@ package. It also owns benchmark baseline storage and regression detection.
   per timed sample and stores the per-call average; `Stats.batch_size` records
   it. `protocol.Request.batch_size` defaults to 1 when omitted by older
   parents.
+- `bench.compareMany` interleaves N named `bench.Runner` values and rotates the
+  starting point each round. `MultiComparison` owns names/samples in an arena;
+  call `deinit()`. `pairs` are stored `i < j`; `comparisonOf(a, b)` returns the
+  pair with `a` as numerator (flipping when needed), and `gatePair` returns
+  `error.UnknownName`/`error.InvalidPair`. Text and JSON reports are
+  deterministic in registration order. `MultiComparison.fromSamples` supports
+  synthetic tests, and `toEntries` borrows the owned names/samples as
+  `baseline.Entry` values.
 - `bench.pinToCpu`, `bench.currentCpu`, `bench.affinityMask`, and
   `bench.peakRssBytes` are Linux-only. Tests must skip on
   `error.Unsupported`, and pinning tests must restore the original mask.

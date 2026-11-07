@@ -21,6 +21,12 @@ pub const process = @import("bench/process.zig");
 pub const stderr_capture = @import("bench/stderr_capture.zig");
 pub const watchdog = @import("bench/watchdog.zig");
 
+/// Interleaved multi-implementation comparison.
+pub const multi = @import("bench/multi.zig");
+pub const NamedRunner = multi.NamedRunner;
+pub const MultiComparison = multi.MultiComparison;
+pub const compareMany = multi.compareMany;
+
 /// Type-erased benchmark callback used by `runRuntime` and the child
 /// registry.
 pub const Runner = struct {
@@ -505,6 +511,8 @@ pub fn compare(
     return Comparison.fromSamples(a_samples.items, b_samples.items);
 }
 
+const measure_lib = @import("bench/measure.zig");
+
 fn measure(
     alloc: Allocator,
     io: std.Io,
@@ -513,25 +521,10 @@ fn measure(
     comptime func: anytype,
     batch_size: usize,
 ) !u64 {
-    const start = std.Io.Clock.Timestamp.now(io, clock);
-    var index: usize = 0;
-    while (index < batch_size) : (index += 1) {
-        const result = try func(context, alloc, io);
-        blackBox(result);
-    }
-    const elapsed_ns = start.untilNow(io).raw.toNanoseconds();
-    if (elapsed_ns < 0) return error.ClockWentBackwards;
-    const wall_ns: u64 = @intCast(elapsed_ns);
-    return wall_ns / @as(u64, @intCast(batch_size));
+    return measure_lib.perCall(alloc, io, clock, context, func, batch_size);
 }
 
-const Measurement = struct {
-    /// Per-call average stored in `Stats.samples_ns`.
-    elapsed_ns: u64,
-    /// Total wall time for the batch, used for `min_time_ns`.
-    wall_ns: u64,
-    result: u64,
-};
+const Measurement = measure_lib.RunnerMeasurement;
 
 fn measureRunner(
     alloc: Allocator,
@@ -540,21 +533,7 @@ fn measureRunner(
     runner: Runner,
     batch_size: usize,
 ) !Measurement {
-    const start = std.Io.Clock.Timestamp.now(io, clock);
-    var last_result: u64 = 0;
-    var index: usize = 0;
-    while (index < batch_size) : (index += 1) {
-        last_result = try runner.call(alloc, io);
-        blackBox(last_result);
-    }
-    const elapsed_ns = start.untilNow(io).raw.toNanoseconds();
-    if (elapsed_ns < 0) return error.ClockWentBackwards;
-    const wall_ns: u64 = @intCast(elapsed_ns);
-    return .{
-        .elapsed_ns = wall_ns / @as(u64, @intCast(batch_size)),
-        .wall_ns = wall_ns,
-        .result = last_result,
-    };
+    return measure_lib.runner(alloc, io, clock, runner, batch_size);
 }
 
 fn writeSummaryCsv(writer: *std.Io.Writer, summary: stats.Summary) !void {
@@ -600,4 +579,6 @@ test {
     std.testing.refAllDecls(process);
     std.testing.refAllDecls(stderr_capture);
     std.testing.refAllDecls(watchdog);
+    std.testing.refAllDecls(multi);
+    std.testing.refAllDecls(measure_lib);
 }

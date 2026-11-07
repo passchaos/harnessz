@@ -346,6 +346,46 @@ p-value is 1 and the comparison is not significant.
 passes, the comparison is significant at 0.05, and `p_value <= max_p_value`.
 The JSON and CSV renderings include both fields.
 
+### Multi-implementation comparison
+
+`compareMany` measures any number of named implementations in one interleaved
+run. Each round visits every candidate once, rotating the starting point, so
+ordering bias is spread instead of favoring the first or last entry. Every pair
+gets the same `Comparison` type used by `bench.compare`.
+
+```zig
+const runners = [_]harnessz.bench.NamedRunner{
+    .{ .name = "scalar", .runner = .{ .context = &scalar_ctx, .run = scalarWork } },
+    .{ .name = "simd", .runner = .{ .context = &simd_ctx, .run = simdWork } },
+    .{ .name = "gpu", .runner = .{ .context = &gpu_ctx, .run = gpuWork } },
+};
+
+var result = try harnessz.bench.compareMany(gpa, io, .{
+    .warmup_iterations = 2,
+    .iterations = 20,
+}, &runners);
+defer result.deinit();
+
+try result.writeText(writer);
+if (!try result.gatePair("scalar", "simd", 1.05, 0.01)) {
+    return error.PerformanceRegression;
+}
+
+// Feed the same run into baseline tracking.
+const entries = try result.toEntries(gpa, fingerprint);
+defer gpa.free(entries);
+```
+
+`MultiComparison` owns its names and samples until `deinit()`. `rounds` is the
+number of measured rounds, `samples_ns[i]` holds one sample per round,
+`summaries[i]` is the usual distribution summary, and `pairs` contains every
+`i < j` comparison. `comparisonOf(a, b)` returns the pair with `a` as the
+numerator, flipping the stored pair when needed; `gatePair` applies
+`gateSignificant` and returns `error.UnknownName` or `error.InvalidPair` for
+unknown or identical names. Text and JSON reports are deterministic and follow
+registration order. `MultiComparison.fromSamples` builds the same structure
+from synthetic samples for tests and offline analysis.
+
 Measured runs and host controls:
 
 ```zig
