@@ -141,6 +141,36 @@ a registry through `runSuite`, saves and reloads a baseline, compares with
 fingerprint enforcement, renders a report, checks a golden file, validates an
 evidence manifest, and hashes the workspace tree.
 
+Dependency wiring:
+
+```zig
+// build.zig.zon
+.dependencies = .{
+    .harnessz = .{ .path = "../harnessz" },
+},
+
+// build.zig
+const harnessz = b.dependency("harnessz", .{
+    .target = target,
+    .optimize = optimize,
+});
+exe.root_module.addImport("harnessz", harnessz.module("harnessz"));
+```
+
+## Migration map
+
+| Repository | Keep | Replace |
+| --- | --- | --- |
+| `zev` | SIMD/scalar kernels and the Highway baseline | `BenchmarkResult`, `nsPerIter`, `printResultChecked`, and the `min_ratio` loop with `compareMany`, `gateRobust`, and `baseline.report` |
+| `spectra` | Per-format benchmark kernels and checksums | Per-file `main` argv parsing/timing/output with a registry plus `runSuite`; use `runMeasured` for allocation/RSS numbers |
+| `iris` | Renderer/scene setup | The single `Clock.awake.now` block with `bench.runMeasured` or `compareMany` across renderer configurations |
+| `imx` | Codec kernels and reference-library oracles | Ad-hoc byte comparisons with `oracle.compareBytes`/`compareJson`; golden writes with `golden.expectFile`/`expectDirectory`; benchmark mains with `runSuite` |
+| `pdfz` | Corpus cases and performance thresholds | Closure file loading with `provenance.loadVerifiedFile`; artifact descriptors with `artifact.Manifest`; ReleaseFast/sample checks with `bench.validatePolicy`; threshold history with `baseline.Store`/`baseline.report` |
+
+The kernels and corpus definitions stay in the downstream repository. The
+shared package only owns sampling, statistics, gates, isolation, provenance,
+and reporting, so migration does not move domain code out of its repository.
+
 ## Caveats
 
 - The measured workload is synthetic. It isolates harness methodology (sampling,
