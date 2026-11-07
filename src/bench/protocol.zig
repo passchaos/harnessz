@@ -15,6 +15,9 @@ pub const Request = struct {
     benchmark: []const u8,
     warmup_iterations: usize,
     iterations: usize,
+    /// Callback invocations per timed sample. Defaults to 1 for requests from
+    /// older parents that omit the field.
+    batch_size: usize = 1,
     min_time_ns: u64,
 };
 
@@ -157,19 +160,32 @@ test "protocol: request round-trip" {
         .benchmark = "checksum",
         .warmup_iterations = 3,
         .iterations = 7,
+        .batch_size = 5,
         .min_time_ns = 12345,
     };
 
     const encoded = try encodeRequest(alloc, original);
     defer alloc.free(encoded);
     try std.testing.expect(std.mem.find(u8, encoded, "\"benchmark\":\"checksum\"") != null);
+    try std.testing.expect(std.mem.find(u8, encoded, "\"batch_size\":5") != null);
 
     var decoded = try decodeRequest(alloc, encoded);
     defer decoded.deinit();
     try std.testing.expectEqualStrings("checksum", decoded.value.benchmark);
     try std.testing.expectEqual(@as(usize, 3), decoded.value.warmup_iterations);
     try std.testing.expectEqual(@as(usize, 7), decoded.value.iterations);
+    try std.testing.expectEqual(@as(usize, 5), decoded.value.batch_size);
     try std.testing.expectEqual(@as(u64, 12345), decoded.value.min_time_ns);
+}
+
+test "protocol: request without batch_size defaults to one" {
+    const alloc = std.testing.allocator;
+    var decoded = try decodeRequest(
+        alloc,
+        "{\"benchmark\":\"x\",\"warmup_iterations\":0,\"iterations\":1,\"min_time_ns\":0}",
+    );
+    defer decoded.deinit();
+    try std.testing.expectEqual(@as(usize, 1), decoded.value.batch_size);
 }
 
 test "protocol: response round-trip with samples and checksum" {

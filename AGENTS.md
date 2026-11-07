@@ -113,6 +113,10 @@ package. It also owns benchmark baseline storage and regression detection.
   significance flag, and the caller's `max_p_value`.
 - `bench.runMeasured` passes a `CountingAllocator` to the callback and reports
   peak RSS (nullable on unsupported platforms) plus peak allocated bytes.
+- `bench.Options.batch_size` (default 1) invokes the callback that many times
+  per timed sample and stores the per-call average; `Stats.batch_size` records
+  it. `protocol.Request.batch_size` defaults to 1 when omitted by older
+  parents.
 - `bench.pinToCpu`, `bench.currentCpu`, `bench.affinityMask`, and
   `bench.peakRssBytes` are Linux-only. Tests must skip on
   `error.Unsupported`, and pinning tests must restore the original mask.

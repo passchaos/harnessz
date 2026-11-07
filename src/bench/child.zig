@@ -72,13 +72,16 @@ pub fn execute(
     name: []const u8,
     request: protocol.Request,
 ) !protocol.Response {
-    if (request.iterations == 0) return error.InvalidOptions;
+    if (request.iterations == 0 or request.batch_size == 0) {
+        return error.InvalidOptions;
+    }
 
     const entry = reg.find(name) orelse return error.UnknownBenchmark;
 
     var stats = bench.runRuntime(alloc, io, .{
         .warmup_iterations = request.warmup_iterations,
         .iterations = request.iterations,
+        .batch_size = request.batch_size,
         .min_time_ns = request.min_time_ns,
     }, entry.context, entry.run) catch |err| {
         return ownedErrorResponse(alloc, @errorName(err), "benchmark execution failed");
@@ -180,8 +183,13 @@ pub fn childMainArgs(
             return 3;
         },
         error.InvalidOptions => {
-            writeErrorResponse(alloc, io, "InvalidRequest", "iterations must be greater than zero");
-            writeDiagnostic(io, "iterations must be greater than zero");
+            writeErrorResponse(
+                alloc,
+                io,
+                "InvalidRequest",
+                "iterations and batch_size must be greater than zero",
+            );
+            writeDiagnostic(io, "iterations and batch_size must be greater than zero");
             return 2;
         },
         else => {
@@ -387,4 +395,14 @@ test "child: execute returns samples, checksum, and callback errors" {
     var invalid = request;
     invalid.iterations = 0;
     try std.testing.expectError(error.InvalidOptions, execute(alloc, std.testing.io, &reg, "ok", invalid));
+
+    var invalid_batch = request;
+    invalid_batch.batch_size = 0;
+    try std.testing.expectError(error.InvalidOptions, execute(
+        alloc,
+        std.testing.io,
+        &reg,
+        "ok",
+        invalid_batch,
+    ));
 }

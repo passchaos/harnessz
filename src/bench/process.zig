@@ -25,6 +25,8 @@ pub const Options = struct {
     benchmark: []const u8,
     warmup_iterations: usize = 1,
     iterations: usize = 10,
+    /// Callback invocations per timed sample in the child.
+    batch_size: usize = 1,
     min_time_ns: u64 = 0,
     /// Zero disables the timeout. When non-zero, the watchdog starts after the
     /// request has been written and terminates the child's process group if it
@@ -136,6 +138,7 @@ pub fn runProcessCapture(
     if (options.argv.len == 0 or
         options.benchmark.len == 0 or
         options.iterations == 0 or
+        options.batch_size == 0 or
         options.max_output_bytes == 0)
     {
         return error.InvalidOptions;
@@ -151,6 +154,7 @@ pub fn runProcessCapture(
         .benchmark = options.benchmark,
         .warmup_iterations = options.warmup_iterations,
         .iterations = options.iterations,
+        .batch_size = options.batch_size,
         .min_time_ns = options.min_time_ns,
     });
     defer locked.free(request_json);
@@ -377,6 +381,11 @@ test "process: invalid options are rejected" {
         .argv = &.{"child"},
         .benchmark = "x",
         .iterations = 0,
+    }));
+    try std.testing.expectError(error.InvalidOptions, runProcess(alloc, std.testing.io, .{
+        .argv = &.{"child"},
+        .benchmark = "x",
+        .batch_size = 0,
     }));
     try std.testing.expectError(error.InvalidOptions, runProcess(alloc, std.testing.io, .{
         .argv = &.{"child"},

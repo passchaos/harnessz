@@ -4,6 +4,7 @@
 //! integration tests:
 //!
 //! - `checksum`     deterministic work used for protocol assertions
+//! - `call-count`   returns a monotonic call counter (batch-size assertions)
 //! - `slow`         sleeps long enough for the parent timeout to win
 //! - `fail`         returns a benchmark error
 //! - `stderr-ok`    writes a diagnostic to stderr and succeeds
@@ -28,6 +29,9 @@ const BenchContext = struct {
     slow_ns: u64 = 2 * std.time.ns_per_s,
     /// Sleep after spawning the grandchild. Also larger than any test timeout.
     tree_sleep_ns: u64 = 10 * std.time.ns_per_s,
+    /// Monotonic callback counter used to verify batch_size across the
+    /// process boundary.
+    calls: u64 = 0,
 };
 
 /// Deterministic FNV-1a-style checksum. The exact value is part of the test
@@ -44,6 +48,13 @@ fn checksumWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u
         hash *%= 0x100000001b3;
     }
     return hash;
+}
+
+fn callCountWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
+    _ = alloc;
+    _ = io;
+    context.calls += 1;
+    return context.calls;
 }
 
 fn slowWork(context: *BenchContext, alloc: std.mem.Allocator, io: std.Io) !u64 {
@@ -167,6 +178,10 @@ fn checksumEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anye
     return checksumWork(@ptrCast(@alignCast(context)), alloc, io);
 }
 
+fn callCountEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
+    return callCountWork(@ptrCast(@alignCast(context)), alloc, io);
+}
+
 fn slowEntry(context: *anyopaque, alloc: std.mem.Allocator, io: std.Io) anyerror!u64 {
     return slowWork(@ptrCast(@alignCast(context)), alloc, io);
 }
@@ -209,6 +224,7 @@ pub fn main(init: std.process.Init) !u8 {
 
     var context: BenchContext = .{};
     try registry.add("checksum", .{ .context = &context, .run = checksumEntry });
+    try registry.add("call-count", .{ .context = &context, .run = callCountEntry });
     try registry.add("slow", .{ .context = &context, .run = slowEntry });
     try registry.add("fail", .{ .context = &context, .run = failingEntry });
     try registry.add("stderr-ok", .{ .context = &context, .run = stderrOkEntry });

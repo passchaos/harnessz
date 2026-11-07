@@ -49,6 +49,11 @@ pub fn blackBox(value: anytype) void {
 pub const Options = struct {
     warmup_iterations: usize = 1,
     iterations: usize = 10,
+    /// Number of callback invocations per timed sample. The stored sample is
+    /// the per-call average. Increase this when a single callback is shorter
+    /// than the clock resolution. Warmup still runs `warmup_iterations`
+    /// callback calls, not batches.
+    batch_size: usize = 1,
     /// When non-zero, keep sampling until this much wall time has elapsed,
     /// with an effective cap of `max(iterations, max_iterations)` samples.
     min_time_ns: u64 = 0,
@@ -60,6 +65,8 @@ pub const Options = struct {
 
 pub const Stats = struct {
     warmup_iterations: usize,
+    /// Callback invocations per sample used to produce `samples_ns`.
+    batch_size: usize = 1,
     samples_ns: []u64,
     distribution: stats.Summary,
     /// Result returned by the last measured callback invocation. Useful as a
@@ -74,11 +81,13 @@ pub const Stats = struct {
     pub fn writeJson(self: Stats, writer: *std.Io.Writer) !void {
         const Wire = struct {
             warmup_iterations: usize,
+            batch_size: usize,
             iterations: usize,
             distribution: stats.Summary,
         };
         try std.json.Stringify.value(Wire{
             .warmup_iterations = self.warmup_iterations,
+            .batch_size = self.batch_size,
             .iterations = self.samples_ns.len,
             .distribution = self.distribution,
         }, .{ .whitespace = .indent_2 }, writer);
@@ -94,6 +103,7 @@ pub const Stats = struct {
     pub fn writeCsv(self: Stats, writer: *std.Io.Writer) !void {
         try writer.writeAll("metric,value\n");
         try writer.print("warmup_iterations,{d}\n", .{self.warmup_iterations});
+        try writer.print("batch_size,{d}\n", .{self.batch_size});
         try writer.print("iterations,{d}\n", .{self.samples_ns.len});
         try writeSummaryCsv(writer, self.distribution);
     }
@@ -336,7 +346,9 @@ fn runInternal(
     runner: Runner,
     counting: ?*system.CountingAllocator,
 ) !Stats {
-    if (options.iterations == 0) return error.InvalidOptions;
+    if (options.iterations == 0 or options.batch_size == 0) {
+        return error.InvalidOptions;
+    }
 
     var warmup_index: usize = 0;
     while (warmup_index < options.warmup_iterations) : (warmup_index += 1) {
@@ -363,10 +375,17 @@ fn runInternal(
         {
             break;
         }
-        const measurement = try measureRunner(callback_alloc, io, options.clock, runner);
+        const measurement = try measureRunner(
+            callback_alloc,
+            io,
+            options.clock,
+            runner,
+            options.batch_size,
+        );
         last_result = measurement.result;
         try samples.append(alloc, measurement.elapsed_ns);
-        total_ns = total_ns +| measurement.elapsed_ns;
+        // The time budget is wall-clock time, not the sum of per-call averages.
+        total_ns = total_ns +| measurement.wall_ns;
     }
 
     if (samples.items.len == 0) return error.InvalidOptions;
@@ -374,6 +393,7 @@ fn runInternal(
     errdefer alloc.free(owned);
     return .{
         .warmup_iterations = options.warmup_iterations,
+        .batch_size = options.batch_size,
         .samples_ns = owned,
         .distribution = stats.summarize(u64, owned),
         .last_result = last_result,
@@ -392,7 +412,9 @@ pub fn compare(
     ctx_b: anytype,
     comptime fn_b: anytype,
 ) !Comparison {
-    if (options.iterations == 0) return error.InvalidOptions;
+    if (options.iterations == 0 or options.batch_size == 0) {
+        return error.InvalidOptions;
+    }
 
     var warmup_index: usize = 0;
     while (warmup_index < options.warmup_iterations) : (warmup_index += 1) {
@@ -410,11 +432,39 @@ pub fn compare(
     var round: usize = 0;
     while (round < options.iterations) : (round += 1) {
         if (round % 2 == 0) {
-            try a_samples.append(alloc, try measure(alloc, io, options.clock, ctx_a, fn_a));
-            try b_samples.append(alloc, try measure(alloc, io, options.clock, ctx_b, fn_b));
+            try a_samples.append(alloc, try measure(
+                alloc,
+                io,
+                options.clock,
+                ctx_a,
+                fn_a,
+                options.batch_size,
+            ));
+            try b_samples.append(alloc, try measure(
+                alloc,
+                io,
+                options.clock,
+                ctx_b,
+                fn_b,
+                options.batch_size,
+            ));
         } else {
-            try b_samples.append(alloc, try measure(alloc, io, options.clock, ctx_b, fn_b));
-            try a_samples.append(alloc, try measure(alloc, io, options.clock, ctx_a, fn_a));
+            try b_samples.append(alloc, try measure(
+                alloc,
+                io,
+                options.clock,
+                ctx_b,
+                fn_b,
+                options.batch_size,
+            ));
+            try a_samples.append(alloc, try measure(
+                alloc,
+                io,
+                options.clock,
+                ctx_a,
+                fn_a,
+                options.batch_size,
+            ));
         }
     }
 
@@ -427,17 +477,25 @@ fn measure(
     clock: std.Io.Clock,
     context: anytype,
     comptime func: anytype,
+    batch_size: usize,
 ) !u64 {
     const start = std.Io.Clock.Timestamp.now(io, clock);
-    const result = try func(context, alloc, io);
-    blackBox(result);
+    var index: usize = 0;
+    while (index < batch_size) : (index += 1) {
+        const result = try func(context, alloc, io);
+        blackBox(result);
+    }
     const elapsed_ns = start.untilNow(io).raw.toNanoseconds();
     if (elapsed_ns < 0) return error.ClockWentBackwards;
-    return @intCast(elapsed_ns);
+    const wall_ns: u64 = @intCast(elapsed_ns);
+    return wall_ns / @as(u64, @intCast(batch_size));
 }
 
 const Measurement = struct {
+    /// Per-call average stored in `Stats.samples_ns`.
     elapsed_ns: u64,
+    /// Total wall time for the batch, used for `min_time_ns`.
+    wall_ns: u64,
     result: u64,
 };
 
@@ -446,13 +504,23 @@ fn measureRunner(
     io: std.Io,
     clock: std.Io.Clock,
     runner: Runner,
+    batch_size: usize,
 ) !Measurement {
     const start = std.Io.Clock.Timestamp.now(io, clock);
-    const result = try runner.call(alloc, io);
-    blackBox(result);
+    var last_result: u64 = 0;
+    var index: usize = 0;
+    while (index < batch_size) : (index += 1) {
+        last_result = try runner.call(alloc, io);
+        blackBox(last_result);
+    }
     const elapsed_ns = start.untilNow(io).raw.toNanoseconds();
     if (elapsed_ns < 0) return error.ClockWentBackwards;
-    return .{ .elapsed_ns = @intCast(elapsed_ns), .result = result };
+    const wall_ns: u64 = @intCast(elapsed_ns);
+    return .{
+        .elapsed_ns = wall_ns / @as(u64, @intCast(batch_size)),
+        .wall_ns = wall_ns,
+        .result = last_result,
+    };
 }
 
 fn writeSummaryCsv(writer: *std.Io.Writer, summary: stats.Summary) !void {

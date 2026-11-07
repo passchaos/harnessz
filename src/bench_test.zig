@@ -30,6 +30,34 @@ test "bench run: structural iteration counts" {
     try std.testing.expectEqual(@as(usize, 2), result.warmup_iterations);
 }
 
+test "bench run: batch size measures multiple calls per sample" {
+    const alloc = std.testing.allocator;
+    var context: RunContext = .{};
+    var result = try bench.run(alloc, std.testing.io, .{
+        .warmup_iterations = 1,
+        .iterations = 4,
+        .batch_size = 3,
+    }, &context, countedWork);
+    defer result.deinit(alloc);
+
+    try std.testing.expectEqual(@as(usize, 13), context.calls); // 1 + 4 * 3
+    try std.testing.expectEqual(@as(usize, 4), result.samples_ns.len);
+    try std.testing.expectEqual(@as(usize, 3), result.batch_size);
+    try std.testing.expectEqual(@as(u64, 13), result.last_result);
+}
+
+test "bench run: zero batch size is invalid" {
+    const alloc = std.testing.allocator;
+    var context: RunContext = .{};
+    try std.testing.expectError(error.InvalidOptions, bench.run(
+        alloc,
+        std.testing.io,
+        .{ .batch_size = 0 },
+        &context,
+        countedWork,
+    ));
+}
+
 test "bench run: min-time sampling is bounded structurally" {
     const alloc = std.testing.allocator;
     var context: RunContext = .{};
@@ -104,6 +132,32 @@ test "bench compare: structural rounds and alternating order" {
     try std.testing.expectEqual(@as(usize, 4), comparison.b.count);
     try std.testing.expectEqual(@as(usize, 4), ctx_a.calls);
     try std.testing.expectEqual(@as(usize, 4), ctx_b.calls);
+}
+
+test "bench compare: batch size preserves alternating rounds" {
+    const alloc = std.testing.allocator;
+    var order: std.ArrayList(u8) = .empty;
+    defer order.deinit(alloc);
+
+    var ctx_a: OrderContext = .{ .order = &order, .alloc = alloc };
+    var ctx_b: OrderContext = .{ .order = &order, .alloc = alloc };
+
+    const comparison = try bench.compare(
+        alloc,
+        std.testing.io,
+        .{ .warmup_iterations = 0, .iterations = 2, .batch_size = 3 },
+        &ctx_a,
+        orderA,
+        &ctx_b,
+        orderB,
+    );
+
+    try std.testing.expectEqualStrings("AAABBBBBBAAA", order.items);
+    try std.testing.expectEqual(@as(usize, 2), comparison.rounds);
+    try std.testing.expectEqual(@as(usize, 2), comparison.a.count);
+    try std.testing.expectEqual(@as(usize, 2), comparison.b.count);
+    try std.testing.expectEqual(@as(usize, 6), ctx_a.calls);
+    try std.testing.expectEqual(@as(usize, 6), ctx_b.calls);
 }
 
 test "bench compare: warmup calls both sides" {
@@ -190,6 +244,25 @@ test "bench comparison: JSON and CSV output" {
     defer alloc.free(csv);
     try std.testing.expect(std.mem.find(u8, csv, "metric,a,b") != null);
     try std.testing.expect(std.mem.find(u8, csv, "median_ns") != null);
+}
+
+test "bench stats: batch size is reported" {
+    const alloc = std.testing.allocator;
+    var context: RunContext = .{};
+    var result = try bench.run(alloc, std.testing.io, .{
+        .warmup_iterations = 0,
+        .iterations = 2,
+        .batch_size = 2,
+    }, &context, countedWork);
+    defer result.deinit(alloc);
+
+    const json = try result.toJson(alloc);
+    defer alloc.free(json);
+    try std.testing.expect(std.mem.find(u8, json, "\"batch_size\": 2") != null);
+
+    const csv = try result.toCsv(alloc);
+    defer alloc.free(csv);
+    try std.testing.expect(std.mem.find(u8, csv, "batch_size,2") != null);
 }
 
 test "bench comparison: non-finite speedup is null in JSON" {

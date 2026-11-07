@@ -298,6 +298,7 @@ fn work(context: *Ctx, gpa: std.mem.Allocator, io: std.Io) !u64 {
 var stats = try harnessz.bench.run(gpa, io, .{
     .warmup_iterations = 3,
     .iterations = 20,
+    .batch_size = 1, // raise for callbacks shorter than the clock resolution
     .min_time_ns = 200 * std.time.ns_per_ms,
     .max_iterations = 200,
 }, &context, work);
@@ -321,6 +322,9 @@ Zig 0.16 `std.mem.doNotOptimizeAway` primitive. When `min_time_ns` is non-zero,
 sampling collects at least `iterations` samples and continues until the time
 budget is met, capped at `max(iterations, max_iterations)` samples. A zero
 candidate median produces an infinite speedup, which JSON renders as `null`.
+`batch_size` invokes the callback that many times per timed sample and stores
+the per-call average; `Stats.batch_size` records the value. Warmup still runs
+`warmup_iterations` callback calls.
 
 Gate logic is testable without timing:
 
@@ -383,7 +387,7 @@ state, and other benchmarks cannot perturb the samples.
 The parent writes one JSON `Request` to the child's stdin and closes it:
 
 ```json
-{"benchmark":"checksum","warmup_iterations":2,"iterations":20,"min_time_ns":0}
+{"benchmark":"checksum","warmup_iterations":2,"iterations":20,"batch_size":1,"min_time_ns":0}
 ```
 
 The child writes exactly one JSON `Response` to stdout:
@@ -475,6 +479,7 @@ var response = try harnessz.bench.process.runProcess(gpa, io, .{
     .benchmark = "checksum",
     .warmup_iterations = 2,
     .iterations = 20,
+    .batch_size = 1,
     .min_time_ns = 0,
     .timeout_ns = 30 * std.time.ns_per_s, // 0 disables
 });
