@@ -116,6 +116,9 @@ package. It also owns benchmark baseline storage and regression detection.
 - Policy tests must cover a valid configuration, build-mode mismatch and the
   empty-mode opt-out, each sample-count bound, inconsistent policy bounds, the
   deterministic first violation, and descriptions for every violation.
+- After public API or packaging changes, run the external consumer example
+  (`cd examples/consumer && zig build run`). It must build and run using only
+  the path dependency and the public `harnessz` module.
 - Golden directory tests must cover create/update/match, missing/extra/changed
   detection, update-mode pruning, deterministic report ordering, and bounds.
 - JSON oracle tests must cover reordered keys, array order, numeric tolerance,

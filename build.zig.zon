@@ -10,6 +10,7 @@
         "src",
         "test",
         "bench",
+        "examples",
         "README.md",
         "AGENTS.md",
     },

@@ -38,6 +38,20 @@ zig build test -Doptimize=ReleaseFast
 Tests live beside each implementation. Package-level integration tests live in
 `test/integration.zig`.
 
+### Consumer example
+
+`examples/consumer/` is a minimal external package that depends on harnessz by
+path and exercises the public API without importing internal modules:
+
+```sh
+cd examples/consumer
+zig build run
+```
+
+It covers `bench.run`, `compareMany`, `runSuite`, policy validation, provenance
+hashing/fingerprinting, artifact verification, golden files, and baseline
+reports. Use it as the starting point for a downstream integration.
+
 The adoption comparison against downstream ad-hoc timing loops is a separate,
 host-dependent tool:
 

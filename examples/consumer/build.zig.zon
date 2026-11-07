@@ -1,0 +1,10 @@
+.{
+    .name = .harnessz_consumer,
+    .version = "0.0.0",
+    .fingerprint = 0x5c9e39ac1adcf87c,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .harnessz = .{ .path = "../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "main.zig" },
+}

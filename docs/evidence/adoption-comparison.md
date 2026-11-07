@@ -160,6 +160,11 @@ const harnessz = b.dependency("harnessz", .{
 exe.root_module.addImport("harnessz", harnessz.module("harnessz"));
 ```
 
+The wiring above is exercised by `examples/consumer/`, a standalone package
+that depends on harnessz by path. `cd examples/consumer && zig build run`
+prints a `consumer smoke ok` line after covering the bench, provenance,
+artifact, golden, and baseline APIs.
+
 ## Migration map
 
 | Repository | Keep | Replace |
