@@ -169,3 +169,7 @@ See [Testing](docs/testing.md) for the full gate and test taxonomy.
   Compare mode never mutates the tree.
 - `std.fs` file APIs are not used; `std.fs.path` remains in use for pure path
   manipulation. Directory creation uses `std.Io.Dir.createDirPath`.
+
+## License
+
+BSD 2-Clause License, Copyright (c) 2026 Greedwolf DSS. See `LICENSE`.
